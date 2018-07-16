@@ -40,6 +40,7 @@
 
 #define POTD_MAXFD 32
 #define POTD_MAXEVENTS 64
+#define POTD_WAITINF -1
 
 typedef enum forward_state {
     CON_OK, CON_IN_TERMINATED, CON_OUT_TERMINATED,
@@ -49,6 +50,7 @@ typedef enum forward_state {
 typedef struct event_ctx {
     int active;
     int has_error;
+    int timeout;
 
     int epoll_fd;
     struct epoll_event events[POTD_MAXEVENTS];
@@ -64,7 +66,7 @@ void event_init(event_ctx **ctx);
 
 void event_free(event_ctx **ctx);
 
-int event_setup(event_ctx *ctx);
+int event_setup(event_ctx *ctx, int timeout);
 
 int event_add_sock(event_ctx *ctx, psocket *sock);
 

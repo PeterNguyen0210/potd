@@ -80,13 +80,17 @@ void event_free(event_ctx **ctx)
     *ctx = NULL;
 }
 
-int event_setup(event_ctx *ctx)
+int event_setup(event_ctx *ctx, int timeout)
 {
     assert(ctx);
 
     if (ctx->epoll_fd < 0)
         /* flags == 0 -> obsolete size arg is dropped */
         ctx->epoll_fd = epoll_create1(0);
+    if (timeout < 0)
+        ctx->timeout = POTD_WAITINF;
+    else
+        ctx->timeout = timeout;
 
     return ctx->epoll_fd < 0;
 }
@@ -136,7 +140,8 @@ int event_loop(event_ctx *ctx, on_event_cb on_event, void *user_data)
 
     while (ctx->active && !ctx->has_error) {
         errno = 0;
-        n = epoll_pwait(ctx->epoll_fd, ctx->events, POTD_MAXEVENTS, -1, &eset);
+        n = epoll_pwait(ctx->epoll_fd, ctx->events, POTD_MAXEVENTS,
+                ctx->timeout, &eset);
         saved_errno = errno;
         if (errno == EINTR)
             continue;

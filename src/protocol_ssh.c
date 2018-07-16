@@ -53,6 +53,7 @@
 
 #include "protocol_ssh.h"
 #include "protocol.h"
+#include "jail_protocol.h"
 #ifdef HAVE_SECCOMP
 #include "pseccomp.h"
 #endif
@@ -64,8 +65,6 @@
     LIBSSH_VERSION_MICRO < 3
 #pragma message "Unsupported libssh version < 0.7.3"
 #endif
-#define USER_LEN LOGIN_NAME_MAX
-#define PASS_LEN 80
 #define CACHE_MAX 32
 #define CACHE_TIME (60 * 20) /* max cache time 20 minutes */
 #define LOGIN_SUCCESS_PROB ((double)1/4) /* successful login probability */
@@ -85,7 +84,7 @@ typedef struct ssh_client {
     forward_ctx dst;
 } ssh_client;
 
-struct protocol_cbs potd_ssh_callbacks = {
+static const struct protocol_cbs potd_ssh_callbacks = {
     .on_listen = ssh_on_listen,
     .on_shutdown = ssh_on_shutdown
 };
@@ -115,7 +114,7 @@ static int copy_chan_to_fd(ssh_session session, ssh_channel channel, void *data,
                            uint32_t len, int is_stderr, void *userdata);
 static void chan_close(ssh_session session, ssh_channel channel, void *userdata);
 
-struct ssh_channel_callbacks_struct ssh_channel_cb = {
+static struct ssh_channel_callbacks_struct ssh_channel_cb = {
     .channel_data_function = copy_chan_to_fd,
     .channel_eof_function = chan_close,
     .channel_close_function = chan_close,
@@ -527,6 +526,10 @@ static void ssh_mainloop(ssh_data *arg)
                         ssh_message_channel_request_reply_success(message);
                         ssh_message_free(message);
                         continue;
+                    } else if (ssh_message_subtype(message) == SSH_CHANNEL_REQUEST_EXEC) {
+                        ssh_message_channel_request_reply_success(message);
+                        ssh_message_free(message);
+                        continue;
                     }
                 }
                 ssh_message_reply_default(message);
@@ -701,6 +704,7 @@ static int client_mainloop(ssh_client *data)
         ssh_channel_close(chan);
         return 1;
     }
+    // JAIL PROTOCOL
 
     ssh_channel_cb.userdata = &ctx->sock.fd;
     ssh_callbacks_init(&ssh_channel_cb);
@@ -735,21 +739,21 @@ static int client_mainloop(ssh_client *data)
 
 static int copy_fd_to_chan(socket_t fd, int revents, void *userdata)
 {
-    ssh_channel chan = (ssh_channel)userdata;
+    ssh_channel chan = (ssh_channel) userdata;
     char buf[BUFSIZ];
     int sz = 0;
 
-    if(!chan) {
+    if (!chan) {
         close(fd);
         return -1;
     }
-    if(revents & POLLIN) {
+    if (revents & POLLIN) {
         sz = read(fd, buf, BUFSIZ);
         if(sz > 0) {
             ssh_channel_write(chan, buf, sz);
         }
     }
-    if(revents & POLLHUP || sz <= 0) {
+    if (revents & POLLHUP || sz <= 0) {
         ssh_channel_close(chan);
         sz = -1;
     }

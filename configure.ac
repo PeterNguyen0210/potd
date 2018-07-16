@@ -108,6 +108,17 @@ AC_TRY_LINK([],
         LDFLAGS="$saved_LDFLAGS" ])
 AC_MSG_RESULT([${noexecstack_support}])
 
+dnl At least try to link most of the libraries static.
+AC_MSG_CHECKING([if we should try to link all libraries static])
+AC_MSG_RESULT([${enable_static:-no}])
+AC_ARG_ENABLE([static],
+    AS_HELP_STRING([--enable-static], [Try to link all libraries static if possible.]))
+AS_IF([test "x$enable_static" = "xyes"],
+    [ CFLAGS="$CFLAGS -static"
+      LDFLAGS="$LDFLAGS -static"
+      enable_static="yes" ],
+    [ enable_static="no"  ])
+
 AX_PTHREAD([],[ AC_MSG_ERROR([pthread required and not found]) ])
 LIBS="$PTHREAD_LIBS $LIBS"
 CFLAGS="$CFLAGS $PTHREAD_CFLAGS"
@@ -131,7 +142,7 @@ AC_CHECK_FUNCS([open read write close mmap munmap malloc free memset memcpy fork
                 getpwnam getgrnam setreuid setregid \
                 wait waitpid isprint remove unlink mkdir access stat chroot chdir mount umount mknod \
                 strdup strcasecmp strncat strncpy printf fprintf getpid \
-                prctl signal signalfd fcntl getenv kill exit \
+                prctl signal signalfd pipe fcntl getenv kill exit \
                 setsockopt socket connect accept bind listen \
                 time localtime difftime strtol strtoll getopt_long_only], [],
       [ AC_MSG_ERROR([required function not available]) ])
