@@ -1,5 +1,5 @@
 /*
- * socket.h
+ * compat.c
  * potd is licensed under the BSD license:
  *
  * Copyright (c) 2018 Toni Uhlig <matzeton@googlemail.com>
@@ -31,54 +31,74 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef POTD_SOCKET_H
-#define POTD_SOCKET_H 1
-
-#include <netdb.h>
-#include <net/if.h>
-
-#define POTD_BACKLOG 1
-
-typedef struct psocket {
-    int fd;
-    socklen_t addr_len;
-    struct sockaddr addr;
-    int family;
-    int socktype;
-    int protocol;
-} psocket;
-
-
-int socket_nonblock(const psocket *psock);
-
-int socket_init_in(const char *addr,
-                   const char *port, struct addrinfo **results);
-
-int socket_bind_in(psocket *psock, struct addrinfo **results);
-
-int socket_listen_in(psocket *psock);
-
-int socket_accept_in(const psocket *psock, psocket *client_psock);
-
-int socket_connect_in(psocket *psock, struct addrinfo **results);
-
-int socket_connectaddr_in(psocket *psock, struct addrinfo **results,
-                          char host_buf[NI_MAXHOST],
-                          char service_buf[NI_MAXSERV]);
-
-int socket_addrtostr_in(const psocket *psock,
-                        char hbuf[NI_MAXHOST], char sbuf[NI_MAXSERV]);
-
-int socket_reconnect_in(psocket *psock);
-
-int socket_close(psocket *psock);
-
-void socket_clone(const psocket *src, psocket *dst);
-
-ssize_t socket_get_ifnames(const psocket *test_sock, char name[][IFNAMSIZ],
-                           size_t siz, int loopback_only);
-
-int socket_set_ifaddr(const psocket *test_sock,
-                      const char *ifname, const char *addr, const char *mask);
-
+#ifdef HAVE_CONFIG_H
+#include "config.h"
 #endif
+
+#include <stdio.h>
+#include <errno.h>
+
+#include "compat.h"
+
+
+char *
+potd_strtok(char *str, const char *delim, char **saveptr)
+{
+#ifdef HAVE_STRTOK_R
+    return strtok_r(str, delim, saveptr);
+#else
+    (void) saveptr;
+
+    return strtok(str, delim);
+#endif
+}
+
+struct tm *
+potd_localtime(const time_t *timep, struct tm *result)
+{
+#ifdef HAVE_LOCALTIME_R
+    return localtime_r(timep, result);
+#else
+    (void) result;
+
+    return localtime(timep);
+#endif
+}
+
+int
+potd_getpwnam(const char *name, struct passwd *pwd)
+{
+    struct passwd *result = NULL;
+
+    errno = 0;
+#ifdef HAVE_GETPWNAM_R
+    char buf[BUFSIZ];
+
+    return getpwnam_r(name, pwd, buf, sizeof buf, &result) || !result;
+#else
+    result = getpwnam(name);
+    if (result)
+        *pwd = *result;
+
+    return result == NULL;
+#endif
+}
+
+int
+potd_getgrnam(const char *name, struct group *grp)
+{
+    struct group *result = NULL;
+
+    errno = 0;
+#ifdef HAVE_GETGRNAM_R
+    char buf[BUFSIZ];
+
+    return getgrnam_r(name, grp, buf, sizeof buf, &result) || !result;
+#else
+    result = getgrnam(name);
+    if (result)
+        *grp = *result;
+
+    return result == NULL;
+#endif
+}

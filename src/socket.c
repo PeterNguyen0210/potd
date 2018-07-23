@@ -14,8 +14,8 @@
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
  *
- * - Neither the name of the Yellow Lemon Software nor the names of its
- *   contributors may be used to endorse or promote products derived from this
+ * - The names of its contributors may not be used to endorse or promote
+ *   products derived from this
  *   software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -137,6 +137,8 @@ int socket_bind_in(psocket *psock, struct addrinfo **results)
 finalise:
     socket_freeaddr(results);
 
+    /* suppress coverity fals-positive: fd out of scope */
+    /* coverity[leaked_handle] */
     return s;
 }
 
@@ -209,6 +211,8 @@ int socket_connect_in(psocket *psock, struct addrinfo **results)
 finalise:
     socket_freeaddr(results);
 
+    /* suppress coverity fals-positive: fd out of scope */
+    /* coverity[leaked_handle] */
     return s;
 }
 
@@ -295,13 +299,15 @@ ssize_t socket_get_ifnames(const psocket *test_sock, char name[][IFNAMSIZ],
     assert(test_sock);
     sock = socket(test_sock->family, test_sock->socktype,
                   test_sock->protocol);
-    if (sock <= 0)
+    if (sock < 0)
         return -1;
 
     ifc.ifc_len = sizeof buf;
     ifc.ifc_buf = buf;
-    if (ioctl(sock, SIOCGIFCONF, &ifc) == -1)
+    if (ioctl(sock, SIOCGIFCONF, &ifc) == -1) {
+        close(sock);
         return -1;
+    }
     it = ifc.ifc_req;
     end = it + (ifc.ifc_len / sizeof(struct ifreq));
 
@@ -327,12 +333,15 @@ ssize_t socket_get_ifnames(const psocket *test_sock, char name[][IFNAMSIZ],
 int socket_set_ifaddr(const psocket *test_sock,
                       const char *ifname, const char *addr, const char *mask)
 {
-    struct ifreq ifr = {0};
+    struct ifreq ifr;
     int sock;
 
     assert(test_sock);
+    memset(&ifr, 0, sizeof ifr);
     sock = socket(test_sock->family, test_sock->socktype,
                   test_sock->protocol);
+    if (sock < 0)
+        return 1;
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
 
     ifr.ifr_addr.sa_family = AF_INET;
@@ -343,6 +352,7 @@ int socket_set_ifaddr(const psocket *test_sock,
     ioctl(sock, SIOCSIFNETMASK, &ifr);
 
     ioctl(sock, SIOCGIFFLAGS, &ifr);
+    /* coverity[buffer_size_warning] */
     strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
     ifr.ifr_flags |= (IFF_UP | IFF_RUNNING);
 

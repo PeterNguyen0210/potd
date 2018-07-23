@@ -14,8 +14,8 @@
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
  *
- * - Neither the name of the Yellow Lemon Software nor the names of its
- *   contributors may be used to endorse or promote products derived from this
+ * - The names of its contributors may not be used to endorse or promote
+ *   products derived from this
  *   software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -35,6 +35,7 @@
 #include <time.h>
 
 #include "log.h"
+#include "compat.h"
 
 log_priority log_prio = NOTICE;
 log_open_cb log_open = NULL;
@@ -48,12 +49,12 @@ char *
 curtime_str(char *buf, size_t siz)
 {
     time_t t;
-    struct tm *tmp;
+    struct tm *tmp, res;
 
     t = time(NULL);
-    tmp = localtime(&t);
+    tmp = potd_localtime(&t, &res);
 
-    if (!strftime(buf, siz, "%d %b %y - %H:%M:%S", tmp))
+    if (tmp && !strftime(buf, siz, "%d %b %y - %H:%M:%S", tmp))
         snprintf(buf, siz, "%s", "UNKNOWN_TIME");
 
     return buf;

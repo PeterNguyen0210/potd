@@ -14,8 +14,8 @@
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
  *
- * - Neither the name of the Yellow Lemon Software nor the names of its
- *   contributors may be used to endorse or promote products derived from this
+ * - The names of its contributors may not be used to endorse or promote
+ *   products derived from this
  *   software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -63,6 +63,10 @@
 #endif
 
 #include "utils.h"
+#include "compat.h"
+#ifdef HAVE_SECCOMP
+#include "pseccomp.h"
+#endif
 #include "log.h"
 #include "options.h"
 
@@ -294,7 +298,8 @@ pid_t daemonize(int stay_foreground)
     if (!stay_foreground) {
         /* Change the working directory to the root directory */
         /* or another appropriated directory */
-        chdir("/");
+        if (chdir("/"))
+            return -1;
         /* Close all open file descriptors */
         assert( close_fds_except(-1) == 0 );
         assert( redirect_devnull_to(0, 1, 2, -1) == 0 );
@@ -375,8 +380,8 @@ int redirect_devnull_to(int fds, ...)
 
 int change_user_group(const char *user, const char *group)
 {
-    struct passwd *pwd = NULL;
-    struct group *grp = NULL;
+    struct passwd pwd;
+    struct group grp;
     gid_t gid;
 
     if (group)
@@ -384,22 +389,24 @@ int change_user_group(const char *user, const char *group)
     else
         D2("Change user to '%s' and its main group", user);
 
-    pwd = getpwnam(user);
-    if (!pwd)
+    if (potd_getpwnam(user, &pwd)) {
+        E_STRERR("Get uid from user '%s'", user);
         return 1;
+    }
 
     if (!group) {
-        gid = pwd->pw_gid;
+        gid = pwd.pw_gid;
     } else {
-        grp = getgrnam(group);
-        if (!grp)
+        if (potd_getgrnam(group, &grp)) {
+            E_STRERR("Get gid from group '%s'", group);
             return 1;
-        gid = grp->gr_gid;
+        }
+        gid = grp.gr_gid;
     }
 
     if (setresgid(gid, gid, gid))
         return 1;
-    if (setresuid(pwd->pw_uid, pwd->pw_uid, pwd->pw_uid))
+    if (setresuid(pwd.pw_uid, pwd.pw_uid, pwd.pw_uid))
         return 1;
 
     return 0;
@@ -422,10 +429,8 @@ int safe_chroot(const char *newroot)
     }
 
     s = chroot(".");
-    if (s) {
-        E_STRERR("Change root directory to '%s'", ".");
+    if (s)
         return 1;
-    }
 
     s = chdir("/");
     if (s) {
@@ -746,7 +751,8 @@ static int cgroups_write_file(const char *cdir, const char *csub,
                 value, cdir, csub);
             s = 1;
         }
-        close(fd);
+        if (fd >= 0)
+            close(fd);
     }
 
     return s;
@@ -1042,8 +1048,14 @@ int selftest_minimal_requirements(void)
     char buf[32] = {0};
     char test[64] = {0};
 
+    pid_t child_pid;
+#ifdef HAVE_SECCOMP
+    pseccomp_ctx *psc = NULL;
+#endif
+
     N2("%s", "Selftest ..");
 
+    /* do some basic runtime tests */
     memset(&test[0], 'A', sizeof test);
     test[sizeof test - 1] = 0;
     s = snprintf(buf, sizeof buf,  "%s", &test[0]);
@@ -1052,22 +1064,120 @@ int selftest_minimal_requirements(void)
     if (buf[sizeof buf - 1] != 0)
         goto error;
 
-    if (getopt_used(OPT_RUNTEST)) {
-        N("%s", "Selftest success");
-        exit(EXIT_SUCCESS);
-    }
+#ifdef HAVE_VALGRIND
+    if (RUNNING_ON_VALGRIND)
+        W2("%s", "You are using valgrind. This is *ONLY* for debug reasons and may "
+                 "affect your overall security! Be warned.");
+#endif
 
     s = open(getopt_str(OPT_ROFILE), O_WRONLY|O_CREAT|O_TRUNC, 0);
-    if (s < 0 && errno != EEXIST)
+    if (s < 0 && errno != EEXIST) {
+        E_STRERR("RO-file '%s' check", getopt_str(OPT_ROFILE));
         goto error;
-    if (mkdir(getopt_str(OPT_RODIR), S_IRWXU) && errno != EEXIST)
+    } else if (s >= 0) {
+        close(s);
+        if (chmod(getopt_str(OPT_ROFILE), S_IRUSR|S_IWUSR))
+            goto error;
+    }
+    if (mkdir(getopt_str(OPT_RODIR), S_IRWXU) && errno != EEXIST) {
+        E_STRERR("RO-directory '%s' check", getopt_str(OPT_RODIR));
         goto error;
+    }
+    if (mkdir(getopt_str(OPT_ROOT), S_IRWXU) && errno != EEXIST) {
+        E_STRERR("ROOT-directory '%s' check", getopt_str(OPT_ROOT));
+        goto error;
+    }
+    if (mkdir(getopt_str(OPT_NETNS_RUN_DIR), S_IRWXU) && errno != EEXIST) {
+        E_STRERR("NETNS-directory '%s' check", getopt_str(OPT_NETNS_RUN_DIR));
+        goto error;
+    }
+
+    if (mkdir(getopt_str(OPT_SSH_RUN_DIR), S_IRWXU) && errno != EEXIST) {
+        E_STRERR("SSH-directory '%s' check", getopt_str(OPT_SSH_RUN_DIR));
+        goto error;
+    }
+
+    /*
+     * The following tests do neither work on travis-ci nor on gitlab.
+     * FIXME: fork() broken on some docker containers?
+     */
+    s = -1;
+    child_pid = fork();
+    if (!child_pid) {
+        if (change_default_user_group())
+            exit(EXIT_FAILURE);
+        else
+            exit(EXIT_SUCCESS);
+    } else waitpid(child_pid, &s, 0);
+    if (s)
+        goto error;
+
+    /* advanced sandbox tests */
+    if (getuid() == (uid_t) 0) {
+        child_pid = fork();
+
+        switch (child_pid) {
+            case -1:
+                E_STRERR("%s", "Forking");
+                goto error;
+                break;
+            case 0:
+                if (clearenv()) {
+                    E_STRERR("%s", "Clearing environment vairables");
+                    exit(EXIT_FAILURE);
+                }
+                if (cgroups_set() || cgroups_activate()) {
+                    E_STRERR("%s", "Activating cgroups");
+                    exit(EXIT_FAILURE);
+                }
+                if (unshare(CLONE_NEWUTS|CLONE_NEWPID|CLONE_NEWIPC|CLONE_NEWNS))
+                {
+                    E_STRERR("%s", "Unshare");
+                    exit(EXIT_FAILURE);
+                }
+                mount_root();
+#ifdef HAVE_SECCOMP
+                pseccomp_init(&psc,
+                    (getopt_used(OPT_SECCOMP_MINIMAL) ? PS_MINIMUM : 0));
+                if (pseccomp_default_rules(psc)) {
+                    E_STRERR("%s", "Seccomp");
+                    exit(EXIT_FAILURE);
+                }
+                pseccomp_free(&psc);
+#endif
+
+                s = -1;
+                child_pid = fork();
+                if (!child_pid) {
+                    if (safe_chroot(getopt_str(OPT_ROOT)))
+                        exit(EXIT_FAILURE);
+#ifdef HAVE_SECCOMP
+                    pseccomp_set_immutable();
+                    pseccomp_init(&psc,
+                        (getopt_used(OPT_SECCOMP_MINIMAL) ? PS_MINIMUM : 0));
+                    if (pseccomp_jail_rules(psc))
+                        exit(EXIT_FAILURE);
+#endif
+                    exit(EXIT_SUCCESS);
+                } else waitpid(child_pid, &s, 0);
+
+                exit(s);
+            default:
+                waitpid(child_pid, &s, 0);
+                if (s)
+                    goto error;
+        }
+    }
+
+    N("%s", "Selftest success");
+    if (getopt_used(OPT_RUNTEST))
+        exit(EXIT_SUCCESS);
 
     return 0;
 error:
-    if (getopt_used(OPT_RUNTEST)) {
-        E("%s", "Selftest failed");
+    E("%s", "Selftest failed");
+    if (getopt_used(OPT_RUNTEST))
         exit(EXIT_FAILURE);
-    }
+
     return 1;
 }

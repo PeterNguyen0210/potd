@@ -14,8 +14,8 @@
  *   this list of conditions and the following disclaimer in the documentation
  *   and/or other materials provided with the distribution.
  *
- * - Neither the name of the Yellow Lemon Software nor the names of its
- *   contributors may be used to endorse or promote products derived from this
+ * - The names of its contributors may not be used to endorse or promote
+ *   products derived from this
  *   software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
@@ -340,7 +340,7 @@ static int jail_childfn(prisoner_process *ctx)
     snprintf(path, sizeof path, "%s%s", ctx->newroot, path_shell);
     D2("Checking Shell '%s'", path);
     if (access(path, R_OK|X_OK))
-        FATAL("Shell '%s' is not accessible", path);
+        FATAL("Access to shell '%s'", path);
 
     snprintf(path, sizeof path, "%s%s", ctx->newroot, path_dev);
     D2("Mounting devtmpfs to '%s'", path);
@@ -457,7 +457,8 @@ static int jail_childfn(prisoner_process *ctx)
             caps_drop_all();
 #endif
 
-            sethostname("openwrt", SIZEOF("openwrt"));
+            if (sethostname("openwrt", SIZEOF("openwrt")))
+                exit(EXIT_FAILURE);
             if (execl(path_shell, path_shell, (char *) NULL))
                 exit(EXIT_FAILURE);
             break;
