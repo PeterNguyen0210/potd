@@ -172,7 +172,7 @@ int redirector_setup_event(redirector_ctx *rdr_ctx[], size_t siz, event_ctx **ev
     assert(siz > 0 && siz < POTD_MAXFD);
 
     event_init(ev_ctx);
-    if (event_setup(*ev_ctx, POTD_WAITINF))
+    if (event_setup(*ev_ctx))
         return 1;
 
     for (size_t i = 0; i < siz; ++i) {
@@ -390,7 +390,7 @@ client_mainloop(void *arg)
     args = (client_thread *) arg;
 
     event_init(&ev_ctx);
-    if (event_setup(ev_ctx, POTD_WAITINF)) {
+    if (event_setup(ev_ctx)) {
         E_STRERR("Client event context creation for server fd %d",
             args->rdr_ctx->sock.fd);
         goto finish;

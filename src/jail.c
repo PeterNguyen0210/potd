@@ -155,7 +155,7 @@ int jail_setup_event(jail_ctx *ctx[], size_t siz, event_ctx **ev_ctx)
     assert(siz > 0 && siz < POTD_MAXFD);
 
     event_init(ev_ctx);
-    if (event_setup(*ev_ctx, POTD_WAITINF))
+    if (event_setup(*ev_ctx))
         return 1;
 
     for (size_t i = 0; i < siz; ++i) {
@@ -407,6 +407,15 @@ static int jail_childfn(prisoner_process *ctx)
             if (update_guid_map(getpid(), ug_map, 1))
                 exit(EXIT_FAILURE);
 */
+
+            if (read(init_pipefd[0], &ctx->client_data, sizeof ctx->client_data) ==
+                sizeof ctx->client_data)
+            {
+                N("Got additional Jail data: [user: '%s', pass: '%s']",
+                    ctx->client_data.user, ctx->client_data.pass);
+            }
+            close(init_pipefd[0]);
+
             close(master_fd);
             if (login_tty(slave_fd))
                 exit(EXIT_FAILURE);
@@ -435,14 +444,6 @@ static int jail_childfn(prisoner_process *ctx)
                 "  * 1 splash Cranberry juice\n"
                 " -----------------------------------------------------\n"
             );
-
-            if (read(init_pipefd[0], &ctx->client_data, sizeof ctx->client_data) ==
-                sizeof ctx->client_data)
-            {
-                N("Got additional Jail data: [user: '%s', pass: '%s']",
-                    ctx->client_data.user, ctx->client_data.pass);
-            }
-            close(init_pipefd[0]);
 
 #ifdef HAVE_SECCOMP
             pseccomp_set_immutable();
@@ -507,7 +508,7 @@ static int jail_socket_tty(prisoner_process *ctx, int tty_fd, int init_fd)
     ev_cli.tty_fd = tty_fd;
 
     event_init(&ev_ctx);
-    if (event_setup(ev_ctx, POTD_WAITINF)) {
+    if (event_setup(ev_ctx)) {
         E_STRERR("Jail event context creation for jail tty fd %d",
             tty_fd);
         goto finish;
@@ -550,16 +551,18 @@ static int jail_socket_tty(prisoner_process *ctx, int tty_fd, int init_fd)
     ev_cli.host_buf = &ctx->host_buf[0];
     ev_cli.service_buf = &ctx->service_buf[0];
 
+    snprintf(ctx->client_data.user, sizeof ctx->client_data.user,
+        "%s", "root");
+    snprintf(ctx->client_data.pass, sizeof ctx->client_data.pass,
+        "%s", "pass");
+
+    event_set_timeout(ev_ctx, PROTO_TIMEOUT);
     if (!jail_protocol_handshake_read(ev_ctx, ctx->client_psock.fd,
                                       tty_fd, &ctx->client_data))
     {
         N("Using Jail protocol for fd %d", ctx->client_psock.fd);
     } else {
         N("Using raw Jail communication for fd %d", ctx->client_psock.fd);
-        snprintf(ctx->client_data.user, sizeof ctx->client_data.user,
-            "%s", "root");
-        snprintf(ctx->client_data.pass, sizeof ctx->client_data.pass,
-            "%s", "pass");
     }
 
     if (write(init_fd, &ctx->client_data, sizeof ctx->client_data) !=
@@ -570,6 +573,7 @@ static int jail_socket_tty(prisoner_process *ctx, int tty_fd, int init_fd)
     }
     close(init_fd);
 
+    event_set_timeout(ev_ctx, POTD_WAITINF);
     rc = event_loop(ev_ctx, jail_socket_tty_io, &ev_cli);
 finish:
     close(ev_cli.signal_fd);

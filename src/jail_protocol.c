@@ -66,7 +66,8 @@ ssize_t jail_protocol_readhdr(jail_data *dst, unsigned char *buf,
     if (ntohl(hdr->size) != data_siz)
         return -1;
 
-    switch (ntohl(hdr->type)) {
+    dst->last_type = ntohl(hdr->type);
+    switch (dst->last_type) {
         case PROTO_TYPE_USER:
             min_siz = MIN(data_siz, USER_LEN);
             memcpy(dst->user, (char *) buf + sizeof(*hdr), min_siz);
@@ -86,14 +87,15 @@ ssize_t jail_protocol_readhdr(jail_data *dst, unsigned char *buf,
     return data_siz;
 }
 
-ssize_t jail_protocol_writehdr(jail_protocol_hdr *src, int type,
-							   unsigned char *buf, size_t bufsiz)
+ssize_t jail_protocol_writehdr(int type, unsigned char *buf, size_t bufsiz)
 {
     jail_protocol_hdr *hdr;
     size_t data_siz;
 
-    assert(src && buf);
+    assert(buf);
 
+    if (bufsiz < sizeof(*hdr))
+        return -1;
     hdr = (jail_protocol_hdr *) buf;
     hdr->magic = htonl(PROTO_MAGIC);
     hdr->type = htonl(type);
@@ -107,28 +109,34 @@ static int
 handshake_read_loop(event_ctx *ev_ctx, int src_fd, void *user_data)
 {
     jail_event *ev_jail = (jail_event *) user_data;
-    int siz, rc, dst_fd;
+    int dst_fd = -1;
+    ssize_t siz, rc = -1;
     unsigned char buf[BUFSIZ] = {0};
 
     (void) ev_ctx;
 
-    if (src_fd == ev_jail->sock_fd)
+    if (src_fd == ev_jail->sock_fd) {
         dst_fd = ev_jail->tty_fd;
-    else if (src_fd == ev_jail->tty_fd)
+    } else if (src_fd == ev_jail->tty_fd) {
         dst_fd = ev_jail->sock_fd;
-    else
-        goto error;
+    } else goto error;
 
     siz = read(src_fd, buf, sizeof buf);
     if (siz <= 0)
         goto error;
-    rc = jail_protocol_readhdr(ev_jail->data, buf, sizeof buf);
-    if (rc < 0) {
-        rc = write(dst_fd, buf, siz);
-        goto error;
+
+    if (src_fd == ev_jail->sock_fd) {
+        rc = jail_protocol_readhdr(ev_jail->data, buf, siz);
+
+        if (rc <= 0)
+            ev_ctx->active = 0;
+        if (rc > 0 && ev_jail->data->last_type == PROTO_TYPE_DATA) {
+            ev_jail->data->used = 1;
+            ev_ctx->active = 0;
+        }
     }
 
-    return 1;
+    return write(dst_fd, buf, siz) == siz;
 error:
     ev_ctx->active = 0;
     return 1;

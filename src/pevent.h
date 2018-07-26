@@ -50,6 +50,7 @@ typedef enum forward_state {
 typedef struct event_ctx {
     int active;
     int has_error;
+    int has_timeout;
     int timeout;
 
     int epoll_fd;
@@ -66,7 +67,9 @@ void event_init(event_ctx **ctx);
 
 void event_free(event_ctx **ctx);
 
-int event_setup(event_ctx *ctx, int timeout);
+int event_setup(event_ctx *ctx);
+
+void event_set_timeout(event_ctx *ctx, int timeout);
 
 int event_add_sock(event_ctx *ctx, psocket *sock);
 

@@ -80,19 +80,26 @@ void event_free(event_ctx **ctx)
     *ctx = NULL;
 }
 
-int event_setup(event_ctx *ctx, int timeout)
+int event_setup(event_ctx *ctx)
 {
     assert(ctx);
 
     if (ctx->epoll_fd < 0)
         /* flags == 0 -> obsolete size arg is dropped */
         ctx->epoll_fd = epoll_create1(0);
+    ctx->timeout = POTD_WAITINF;
+
+    return ctx->epoll_fd < 0;
+}
+
+void event_set_timeout(event_ctx *ctx, int timeout)
+{
+    assert(ctx);
+
     if (timeout < 0)
         ctx->timeout = POTD_WAITINF;
     else
         ctx->timeout = timeout;
-
-    return ctx->epoll_fd < 0;
 }
 
 int event_add_sock(event_ctx *ctx, psocket *sock)
@@ -137,6 +144,7 @@ int event_loop(event_ctx *ctx, on_event_cb on_event, void *user_data)
     sigemptyset(&eset);
     ctx->active = 1;
     ctx->has_error = 0;
+    ctx->has_timeout = 0;
 
     while (ctx->active && !ctx->has_error) {
         errno = 0;
@@ -145,6 +153,10 @@ int event_loop(event_ctx *ctx, on_event_cb on_event, void *user_data)
         saved_errno = errno;
         if (errno == EINTR)
             continue;
+        if (n == 0 && ctx->timeout > POTD_WAITINF) {
+            ctx->has_timeout = 0;
+            break;
+        }
         if (n < 0) {
             ctx->has_error = 1;
             break;

@@ -139,7 +139,7 @@ AC_CHECK_HEADERS([netdb.h])
 
 dnl minimum required functions
 AC_CHECK_FUNCS([open read write close mmap munmap malloc free memset memcpy fork unshare \
-                getpwnam getgrnam setreuid setregid \
+                getpwnam getgrnam setresuid setresgid \
                 wait waitpid isprint remove unlink mkdir access stat chroot chdir mount umount mknod \
                 strdup strcasecmp strncat strncpy printf fprintf getpid \
                 prctl signal signalfd pipe fcntl getenv kill exit \
