@@ -62,8 +62,8 @@ ssize_t jail_protocol_readhdr(jail_data *dst, unsigned char *buf,
     hdr = (jail_protocol_hdr *) buf;
     if (ntohl(hdr->magic) != PROTO_MAGIC)
         return -1;
-    data_siz = bufsiz - sizeof(*hdr);
-    if (ntohl(hdr->size) != data_siz)
+    data_siz = ntohl(hdr->size);
+    if (data_siz > bufsiz - sizeof(*hdr))
         return -1;
 
     dst->last_type = ntohl(hdr->type);
@@ -84,7 +84,7 @@ ssize_t jail_protocol_readhdr(jail_data *dst, unsigned char *buf,
             break;
     }
 
-    return data_siz;
+    return data_siz + sizeof(*hdr);
 }
 
 ssize_t jail_protocol_writehdr(int type, unsigned char *buf, size_t bufsiz)
@@ -100,7 +100,7 @@ ssize_t jail_protocol_writehdr(int type, unsigned char *buf, size_t bufsiz)
     hdr->magic = htonl(PROTO_MAGIC);
     hdr->type = htonl(type);
     data_siz = bufsiz - sizeof(*hdr);
-    hdr->size = data_siz;
+    hdr->size = htonl(data_siz);
 
     return data_siz;
 }
@@ -112,6 +112,7 @@ handshake_read_loop(event_ctx *ev_ctx, int src_fd, void *user_data)
     int dst_fd = -1;
     ssize_t siz, rc = -1;
     unsigned char buf[BUFSIZ] = {0};
+    off_t buf_off = 0;
 
     (void) ev_ctx;
 
@@ -126,17 +127,32 @@ handshake_read_loop(event_ctx *ev_ctx, int src_fd, void *user_data)
         goto error;
 
     if (src_fd == ev_jail->sock_fd) {
-        rc = jail_protocol_readhdr(ev_jail->data, buf, siz);
+        while (1) {
+            rc = jail_protocol_readhdr(ev_jail->data, buf + buf_off,
+                                       siz - buf_off);
 
-        if (rc <= 0)
-            ev_ctx->active = 0;
-        if (rc > 0 && ev_jail->data->last_type == PROTO_TYPE_DATA) {
-            ev_jail->data->used = 1;
-            ev_ctx->active = 0;
+            if (rc < 0) {
+                ev_ctx->active = 0;
+                break;
+            } else {
+                ev_jail->data->used = 1;
+                if (ev_jail->data->last_type == PROTO_TYPE_DATA) {
+                    ev_ctx->active = 0;
+                    break;
+                }
+            }
+
+            buf_off += rc;
         }
     }
 
-    return write(dst_fd, buf, siz) == siz;
+    if (buf_off < siz) {
+        rc = write(dst_fd, buf + buf_off, siz - buf_off);
+        if (rc != siz - buf_off)
+            goto error;
+    }
+
+    return 1;
 error:
     ev_ctx->active = 0;
     return 1;
@@ -146,12 +162,34 @@ int jail_protocol_handshake_read(event_ctx *ev_client, int client_fd,
                                  int tty_fd, jail_data *dst)
 {
     jail_event ev_jail = {0,0,0};
-    int rc;
 
     ev_jail.data = dst;
     ev_jail.sock_fd = client_fd;
     ev_jail.tty_fd = tty_fd;
-    rc = event_loop(ev_client, handshake_read_loop, &ev_jail);
+    event_loop(ev_client, handshake_read_loop, &ev_jail);
 
-    return rc || !ev_client->active;
+    return !dst->used;
+}
+
+int jail_protocol_handshake_write(int server_fd, jail_data *dst)
+{
+    ssize_t rc;
+    unsigned char buf[BUFSIZ] = {0};
+    size_t min_siz;
+
+    min_siz = MIN(strnlen(dst->user, USER_LEN), USER_LEN);
+    memcpy((char *) buf + sizeof(jail_protocol_hdr), dst->user, min_siz);
+    rc = jail_protocol_writehdr(PROTO_TYPE_USER, buf, sizeof(jail_protocol_hdr) + min_siz);
+    if (rc < 0)
+        return -1;
+    rc = write(server_fd, buf, sizeof(jail_protocol_hdr) + rc);
+
+    min_siz = MIN(strnlen(dst->pass, PASS_LEN), PASS_LEN);
+    memcpy((char *) buf + sizeof(jail_protocol_hdr), dst->pass, min_siz);
+    rc = jail_protocol_writehdr(PROTO_TYPE_PASS, buf, sizeof(jail_protocol_hdr) + min_siz);
+    if (rc < 0)
+        return -1;
+    rc = write(server_fd, buf, sizeof(jail_protocol_hdr) + rc);
+
+    return 0;
 }

@@ -82,6 +82,7 @@ typedef struct ssh_data {
 
 typedef struct ssh_client {
     ssh_channel chan;
+    jail_data jail;
     forward_ctx dst;
 } ssh_client;
 
@@ -106,7 +107,8 @@ static void ssh_log_cb(int priority, const char *function, const char *buffer,
                        void *userdata);
 static void ssh_mainloop(ssh_data *arg)
     __attribute__((noreturn));
-static int authenticate(ssh_session session, ssh_login_cache *cache);
+static int authenticate(ssh_session session, ssh_login_cache *cache,
+                        jail_data *jail);
 static int auth_password(const char *user, const char *pass,
                          ssh_login_cache *cache);
 static int client_mainloop(ssh_client *arg);
@@ -486,7 +488,7 @@ static void ssh_mainloop(ssh_data *arg)
         }
 
         /* proceed to authentication */
-        auth = authenticate(ses, cache);
+        auth = authenticate(ses, cache, &data.jail);
         if (!auth) {
             W("SSH authentication error: %s", ssh_get_error(ses));
             goto failed;
@@ -565,7 +567,8 @@ failed:
     }
 }
 
-static int authenticate(ssh_session session, ssh_login_cache *cache)
+static int authenticate(ssh_session session, ssh_login_cache *cache,
+                        jail_data *jail)
 {
     ssh_message message;
 
@@ -582,6 +585,10 @@ static int authenticate(ssh_session session, ssh_login_cache *cache)
                         N("SSH: user '%s' wants to auth with pass '%s'",
                             ssh_message_auth_user(message),
                             ssh_message_auth_password(message));
+                        strncpy(jail->user, ssh_message_auth_user(message),
+                            USER_LEN);
+                        strncpy(jail->pass, ssh_message_auth_password(message),
+                            PASS_LEN);
                         if (auth_password(ssh_message_auth_user(message),
                             ssh_message_auth_password(message), cache))
                         {
@@ -710,7 +717,12 @@ static int client_mainloop(ssh_client *data)
         ssh_channel_close(chan);
         return 1;
     }
-    // JAIL PROTOCOL
+    if (jail_protocol_handshake_write(ctx->sock.fd, &data->jail)) {
+        E_STRERR("Jail protocol handshake to %s:%s",
+            ctx->host_buf, ctx->service_buf);
+        ssh_channel_close(chan);
+        return 1;
+    }
 
     ssh_channel_cb.userdata = &ctx->sock.fd;
     ssh_callbacks_init(&ssh_channel_cb);
