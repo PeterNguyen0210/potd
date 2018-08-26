@@ -44,7 +44,7 @@
 #define PKT_PASS    0x3 /* request(PKT_PASS) -> response(PKT_PASS) */
 
 typedef enum jail_packet_state {
-    JP_NONE, JP_INVALID, JP_HELLO
+    JP_INVALID, JP_NONE, JP_HANDSHAKE, JP_DATA
 } jail_packet_state;
 
 typedef struct jail_packet_ctx {
@@ -52,9 +52,21 @@ typedef struct jail_packet_ctx {
     jail_packet_state pstate;
     on_data_cb on_data;
     void *user_data;
+
+    char *user;
+    char *pass;
 } jail_packet_ctx;
 
 
+int jail_packet_init(jail_packet_ctx **pkt_ctx);
+
+void jail_packet_free(jail_packet_ctx **pkt_ctx);
+
+int jail_packet_setup(jail_packet_ctx *pkt_ctx, int is_server,
+                      on_data_cb on_data);
+
 int jail_packet_loop(event_ctx *ctx, jail_packet_ctx *pkt_ctx);
+
+int jail_packet_handshake(event_ctx *ctx, jail_packet_ctx *pkt_ctx);
 
 #endif
