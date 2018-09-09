@@ -6,14 +6,18 @@
 #include "jail_packet.h"
 #include "utils.h"
 
-#define JP_ATTRS __attribute__((packed, gcc_struct))
+#ifdef gcc_struct
+#define JP_ATTRS __attribute__((packed, aligned(1), gcc_struct))
+#else
+#define JP_ATTRS __attribute__((packed,  aligned(1)))
+#endif
 
 typedef struct jail_packet {
     uint8_t type;
     uint16_t size;
 } JP_ATTRS jail_packet;
 
-#define PKT_SIZ(pkt) (sizeof(jail_packet) + sizeof(pkt))
+#define PKT_SIZ(pkt) (sizeof(jail_packet) + sizeof(*pkt))
 #define PKT_SUB(pkt_ptr) (pkt_ptr + sizeof(jail_packet))
 
 #define JP_MAGIC1 0xDEADC0DE
@@ -23,6 +27,13 @@ typedef struct jail_packet_hello {
     uint32_t magic1;
     uint32_t magic2;
 } JP_ATTRS jail_packet_hello;
+
+typedef struct jail_packet_creds {
+    uint16_t user_siz;
+    uint16_t pass_siz;
+    /* char username[user_size] */
+    /* char password[user_size] */
+} JP_ATTRS jail_packet_creds;
 
 typedef int (*packet_callback)(jail_packet_ctx *ctx, jail_packet *pkt,
                                event_buf *write_buf);
@@ -76,7 +87,7 @@ static int pkt_header_write(unsigned char *buf, size_t siz)
         return 1;
 
     pkt->size = htons(pkt->size);
-    if (siz != PKT_SIZ(*pkt))
+    if (siz != PKT_SIZ(pkt))
         return 1;
 
     return 0;
@@ -97,7 +108,7 @@ static int pkt_hello(jail_packet_ctx *ctx, jail_packet *pkt,
     }
 
     if (ctx->is_server) {
-        if (event_buf_fill(write_buf, (unsigned char *) pkt, PKT_SIZ(*pkt)))
+        if (event_buf_fill(write_buf, (unsigned char *) pkt, PKT_SIZ(pkt)))
             return 1;
     }
 
@@ -154,6 +165,10 @@ int jail_packet_loop(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
 
 static int jail_handshake_event_loop(event_ctx *ctx, event_buf *buf, void *user_data)
 {
+    (void) ctx;
+    (void) buf;
+    (void) user_data;
+
     return 0;
 }
 
