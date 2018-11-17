@@ -53,6 +53,7 @@
 
 #include "protocol_ssh.h"
 #include "protocol.h"
+#include "jail_packet.h"
 #ifdef HAVE_SECCOMP
 #include "pseccomp.h"
 #endif
@@ -65,8 +66,6 @@
     LIBSSH_VERSION_MICRO < 3
 #pragma message "Unsupported libssh version < 0.7.3"
 #endif
-#define USER_LEN LOGIN_NAME_MAX
-#define PASS_LEN 80
 #define CACHE_MAX 32
 #define CACHE_TIME (60 * 20) /* max cache time 20 minutes */
 #define LOGIN_SUCCESS_PROB ((double)1/4) /* successful login probability */
@@ -108,7 +107,8 @@ static void ssh_log_cb(int priority, const char *function, const char *buffer,
                        void *userdata);
 static void ssh_mainloop(ssh_data *arg)
     __attribute__((noreturn));
-static int authenticate(ssh_session session, ssh_login_cache *cache);
+static int authenticate(ssh_session session, ssh_login_cache *cache,
+                        jail_packet_ctx *pkt_ctx);
 static int auth_password(const char *user, const char *pass,
                          ssh_login_cache *cache);
 static int client_mainloop(ssh_client *arg);
@@ -432,6 +432,7 @@ static void ssh_mainloop(ssh_data *arg)
 {
     pthread_mutexattr_t shared;
     ssh_login_cache *cache = NULL;
+    jail_packet_ctx pkt_ctx = INIT_PKTCTX(NULL,NULL);
     size_t i;
     int s, auth = 0, shell = 0, is_child;
     ssh_session ses;
@@ -488,7 +489,7 @@ static void ssh_mainloop(ssh_data *arg)
         }
 
         /* proceed to authentication */
-        auth = authenticate(ses, cache);
+        auth = authenticate(ses, cache, &pkt_ctx);
         if (!auth) {
             W("SSH authentication error: %s", ssh_get_error(ses));
             goto failed;
@@ -563,7 +564,8 @@ failed:
     }
 }
 
-static int authenticate(ssh_session session, ssh_login_cache *cache)
+static int authenticate(ssh_session session, ssh_login_cache *cache,
+                        jail_packet_ctx *pkt_ctx)
 {
     ssh_message message;
     ssh_key pubkey;

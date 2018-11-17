@@ -52,6 +52,7 @@
 #include <assert.h>
 
 #include "jail.h"
+#include "jail_packet.h"
 #include "socket.h"
 #ifdef HAVE_SECCOMP
 #include "pseccomp.h"
@@ -502,6 +503,8 @@ finalise:
 static int jail_socket_tty(prisoner_process *ctx, int tty_fd)
 {
     static client_event ev_cli = {NULL, NULL, NULL, -1, -1, {0}, 0, 0, 0};
+    static jail_packet_ctx pkt_ctx =
+        { 0, JC_SERVER, JP_NONE, NULL, NULL };
     int s, rc = 1;
     event_ctx *ev_ctx = NULL;
     sigset_t mask;
@@ -552,6 +555,14 @@ static int jail_socket_tty(prisoner_process *ctx, int tty_fd)
     ev_cli.client_sock = &ctx->client_psock;
     ev_cli.host_buf = &ctx->host_buf[0];
     ev_cli.service_buf = &ctx->service_buf[0];
+
+    if (!jail_server_handshake(ev_ctx, &pkt_ctx) && pkt_ctx.is_valid) {
+        N("Using Jail protocol for %s:%s", ctx->host_buf, ctx->service_buf);
+        rc = jail_packet_loop(ev_ctx, &pkt_ctx);
+    } else {
+        N("Using raw Jail communication for %s:%s", ctx->host_buf,
+            ctx->service_buf);
+    }
     rc = event_loop(ev_ctx, jail_socket_tty_io, &ev_cli);
 finish:
     close(ev_cli.signal_fd);

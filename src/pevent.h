@@ -35,6 +35,7 @@
 #define POTD_EVENT_H 1
 
 #include <stdio.h>
+#include <unistd.h>
 #include <sys/epoll.h>
 
 #include "socket.h"
@@ -42,6 +43,7 @@
 #define POTD_MAXFD 32
 #define POTD_MAXEVENTS 64
 #define POTD_EVENTBUF_REALLOCSIZ 5
+#define WRITE_BUF(fd) { fd, {0}, 0, NULL }
 
 typedef enum forward_state {
     CON_OK, CON_IN_TERMINATED, CON_OUT_TERMINATED,
@@ -94,8 +96,20 @@ forward_state
 event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
                          void *user_data);
 
+#if 0
+int event_get_buffer(event_ctx *ctx, event_buf *wbuf);
+#endif
+
+void event_buffer_to(event_buf *src, event_buf *to);
+
 int event_buf_fill(event_buf *buf, unsigned char *data, size_t size);
 
 ssize_t event_buf_drain(event_buf *buf);
+
+static inline ssize_t event_buf_read(event_buf *buf)
+{
+    return read(buf->fd, buf->buf + buf->buf_used,
+                sizeof(buf->buf) - buf->buf_used);
+}
 
 #endif

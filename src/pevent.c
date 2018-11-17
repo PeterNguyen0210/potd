@@ -264,8 +264,7 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
 
         if (ev->events & EPOLLIN) {
             errno = 0;
-            ev_buf->buf_used = 0;
-            siz = read(ev_buf->fd, ev_buf->buf, sizeof(ev_buf->buf));
+            siz = event_buf_read(ev_buf);
             saved_errno = errno;
         } else break;
         if (saved_errno == EAGAIN)
@@ -281,8 +280,8 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
                 rc = CON_IN_TERMINATED;
                 break;
             default:
+                ev_buf->buf_used += siz;
                 D2("Read %zu bytes from fd %d", siz, ev_buf->fd);
-                ev_buf->buf_used = siz;
                 break;
         }
 
@@ -310,6 +309,7 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
                 rc = CON_OUT_TERMINATED;
                 break;
             default:
+                ev_buf->buf_used -= siz;
                 D2("Written %zu bytes from fd %d to fd %d",
                     siz, ev_buf->fd, dest_fd);
                 break;
@@ -325,6 +325,36 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
         shutdown(dest_fd, SHUT_RDWR);
     }
     return rc;
+}
+
+#if 0
+int event_get_buffer(event_ctx *ctx, event_buf *wbuf)
+{
+    event_buf *rbuf;
+
+    assert(ctx && wbuf);
+    assert(ctx->current_event >= 0 &&
+        ctx->current_event < POTD_MAXEVENTS);
+
+    rbuf = (event_buf *) ctx->events[ctx->current_event].data.ptr;
+    if (rbuf->fd < 0)
+        return 1;
+
+    wbuf->buf[0] = 0;
+    wbuf->buf_used = 0;
+    wbuf->fd = rbuf->fd;
+    wbuf->buf_user_data = rbuf->buf_user_data;
+
+    return 0;
+}
+#endif
+
+void event_buffer_to(event_buf *src, event_buf *to)
+{
+    to->fd = src->fd;
+    to->buf_user_data = src->buf_user_data;
+    to->buf[0] = 0;
+    to->buf_used = 0;
 }
 
 int event_buf_fill(event_buf *buf, unsigned char *data, size_t size)
