@@ -110,7 +110,6 @@ static int pkt_hello(jail_packet_ctx *ctx, jail_packet *pkt,
 {
     jail_packet_hello *pkt_hello;
 
-printf("PKT_HELLO !!!\n");
     if (ctx->pstate != JP_HANDSHAKE)
         return 1;
     pkt_hello = (jail_packet_hello *) PKT_SUB(pkt);
@@ -133,42 +132,36 @@ printf("PKT_HELLO !!!\n");
 static int pkt_user(jail_packet_ctx *ctx, jail_packet *pkt,
                     event_buf *write_buf)
 {
-printf("PKT_USER !!!\n");
     return 0;
 }
 
 static int pkt_pass(jail_packet_ctx *ctx, jail_packet *pkt,
                     event_buf *write_buf)
 {
-printf("PKT_PASS !!!\n");
     return 0;
 }
 
 static int pkt_start(jail_packet_ctx *ctx, jail_packet *pkt,
                      event_buf *write_buf)
 {
-printf("PKT_START !!!\n");
     return 0;
 }
 
 static int pkt_data(jail_packet_ctx *ctx, jail_packet *pkt,
                     event_buf *write_buf)
 {
-printf("PKT_DATA !!!\n");
     return 0;
 }
 
 static int pkt_respok(jail_packet_ctx *ctx, jail_packet *pkt,
                       event_buf *write_buf)
 {
-printf("PKT_RESPOK !!!\n");
     return 0;
 }
 
 static int pkt_resperr(jail_packet_ctx *ctx, jail_packet *pkt,
                        event_buf *write_buf)
 {
-printf("PKT_RESPERR !!!\n");
     return 0;
 }
 
@@ -226,17 +219,17 @@ int jail_packet_loop(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
     return event_loop(ctx, jail_packet_forward, pkt_ctx);
 }
 
-static int jail_handshake_handler(event_ctx *ctx, event_buf *buf, void *user_data)
-{
-printf("JAIL HANDSHAKE HANDLER !!\n");
-    return 0;
-}
-
 event_ctx *jail_client_handshake(int server_fd, jail_packet_ctx *pkt_ctx)
 {
     event_ctx *ev_ctx = NULL;
     event_buf write_buf = WRITE_BUF(server_fd);
     size_t user_len, pass_len;
+
+    assert(pkt_ctx);
+    assert(pkt_ctx->pstate == JP_NONE);
+    assert(pkt_ctx->ctype == JC_CLIENT);
+
+    pkt_ctx->pstate = JP_HANDSHAKE;
 
     event_init(&ev_ctx);
     if (event_setup(ev_ctx)) {
@@ -267,7 +260,7 @@ event_ctx *jail_client_handshake(int server_fd, jail_packet_ctx *pkt_ctx)
     }
     pkt_ctx->is_valid = 1;
 
-    if (event_loop(ev_ctx, jail_handshake_handler, pkt_ctx)) {
+    if (event_loop(ev_ctx, jail_packet_forward, pkt_ctx)) {
         E_STRERR("Jail protocol handshake for fd %d failed", server_fd);
         goto finish;
     }
@@ -286,6 +279,5 @@ int jail_server_handshake(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
 
     pkt_ctx->pstate = JP_HANDSHAKE;
 
-printf("_server_handshake_\n");
     return event_loop(ctx, jail_packet_forward, pkt_ctx);
 }

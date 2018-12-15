@@ -111,7 +111,7 @@ static int authenticate(ssh_session session, ssh_login_cache *cache,
                         jail_packet_ctx *pkt_ctx);
 static int auth_password(const char *user, const char *pass,
                          ssh_login_cache *cache);
-static int client_mainloop(ssh_client *arg);
+static int client_mainloop(ssh_client *arg, jail_packet_ctx *ctx);
 static int copy_fd_to_chan(socket_t fd, int revents, void *userdata);
 static int copy_chan_to_fd(ssh_session session, ssh_channel channel, void *data,
                            uint32_t len, int is_stderr, void *userdata);
@@ -552,7 +552,7 @@ static void ssh_mainloop(ssh_data *arg)
 
         data.chan = chan;
         data.dst = arg->ctx->dst;
-        if (client_mainloop(&data))
+        if (client_mainloop(&data, &pkt_ctx))
             W2("Client mainloop for fd %d failed",
                 ssh_bind_get_fd(arg->sshbind));
 
@@ -590,6 +590,8 @@ static int authenticate(ssh_session session, ssh_login_cache *cache,
                         if (auth_password(ssh_message_auth_user(message),
                             ssh_message_auth_password(message), cache))
                         {
+                            pkt_ctx->user = strdup(ssh_message_auth_user(message));
+                            pkt_ctx->pass = strdup(ssh_message_auth_password(message));
                             ssh_message_auth_reply_success(message,0);
                             ssh_message_free(message);
                             return 1;
@@ -739,7 +741,7 @@ static int auth_password(const char *user, const char *pass,
     return got_auth;
 }
 
-static int client_mainloop(ssh_client *data)
+static int client_mainloop(ssh_client *data, jail_packet_ctx *pkt_ctx)
 {
     ssh_channel chan = data->chan;
     ssh_session session = ssh_channel_get_session(chan);
@@ -753,6 +755,8 @@ static int client_mainloop(ssh_client *data)
         ssh_channel_close(chan);
         return 1;
     }
+
+    jail_client_handshake(ctx->sock.fd, pkt_ctx);
 
     ssh_channel_cb.userdata = &ctx->sock.fd;
     ssh_callbacks_init(&ssh_channel_cb);

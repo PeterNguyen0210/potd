@@ -75,8 +75,6 @@ typedef struct jail_packet_ctx {
 } jail_packet_ctx;
 
 
-int jail_packet_setup(jail_packet_ctx *pkt_ctx, int is_server);
-
 int jail_packet_loop(event_ctx *ctx, jail_packet_ctx *pkt_ctx);
 
 event_ctx *jail_client_handshake(int server_fd, jail_packet_ctx *pkt_ctx);
