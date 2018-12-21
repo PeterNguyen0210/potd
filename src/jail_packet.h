@@ -37,9 +37,10 @@
 #include <stdint.h>
 
 #include "pevent.h"
+#include "jail.h"
 
 #define INIT_PKTCTX(callback, user_data) \
-    { 0, JC_CLIENT, JP_NONE, NULL, NULL }
+    { 0, {-1,-1}, JC_CLIENT, JP_NONE, NULL, NULL }
 
 #define PKT_INVALID 0x0 /* should not happen, otherwise error */
 /* Client: jail_packet(PKT_HELLO)) + jail_packet_hello
@@ -66,6 +67,7 @@ typedef enum jail_ctx_type {
 
 typedef struct jail_packet_ctx {
     int is_valid;
+    jail_con connection;
 
     jail_ctx_type ctype;
     jail_packet_state pstate;

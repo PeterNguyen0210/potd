@@ -75,10 +75,9 @@ typedef struct server_event {
 } server_event;
 
 typedef struct client_event {
-    psocket *client_sock;
+    jail_con connection;
     char *host_buf;
     char *service_buf;
-    int tty_fd;
     int signal_fd;
     char tty_logbuf[BUFSIZ];
     size_t off_logbuf;
@@ -88,15 +87,15 @@ typedef struct client_event {
 
 static int jail_mainloop(event_ctx **ev_ctx, const jail_ctx *ctx[], size_t siz)
     __attribute__((noreturn));
-static int jail_accept_client(event_ctx *ev_ctx, event_buf *buf,
+static int jail_accept_client(event_ctx *ev_ctx, int src_fd,
                               void *user_data);
 static int jail_childfn(prisoner_process *ctx)
     __attribute__((noreturn));
 static int jail_socket_tty(prisoner_process *ctx, int tty_fd);
-static int jail_socket_tty_io(event_ctx *ev_ctx, event_buf *buf,
+static int jail_socket_tty_io(event_ctx *ev_ctx, int src_fd,
                               void *user_data);
-static int jail_log_input(event_ctx *ev_ctx, int src_fd, int dst_fd,
-                          char *buf, size_t siz, void *user_data);
+static int jail_log_input(event_ctx *ev_ctx, event_buf *read_buf,
+                          event_buf *write_buf, void *user_data);
 
 
 void jail_init_ctx(jail_ctx **ctx, size_t stacksize)
@@ -234,24 +233,23 @@ static int jail_mainloop(event_ctx **ev_ctx, const jail_ctx *ctx[], size_t siz)
     exit(rc);
 }
 
-static int jail_accept_client(event_ctx *ev_ctx, event_buf *buf,
+static int jail_accept_client(event_ctx *ev_ctx, int src_fd,
                               void *user_data)
 {
     size_t i, rc = 0;
-    int s, fd;
+    int s;
     pid_t prisoner_pid;
     server_event *ev_jail;
     static prisoner_process *args;
     const jail_ctx *jail_ctx;
 
     (void) ev_ctx;
-    assert(ev_ctx && buf && user_data);
+    assert(ev_ctx && user_data);
     ev_jail = (server_event *) user_data;
-    fd = buf->fd;
 
     for (i = 0; i < ev_jail->siz; ++i) {
         jail_ctx = ev_jail->jail_ctx[i];
-        if (jail_ctx->fwd_ctx.sock.fd == fd) {
+        if (jail_ctx->fwd_ctx.sock.fd == src_fd) {
             args = (prisoner_process *) calloc(1, sizeof(*args));
             assert(args);
             args->newroot = jail_ctx->newroot;
@@ -502,15 +500,14 @@ finalise:
 
 static int jail_socket_tty(prisoner_process *ctx, int tty_fd)
 {
-    static client_event ev_cli = {NULL, NULL, NULL, -1, -1, {0}, 0, 0, 0};
+    static client_event ev_cli = {{-1,-1}, NULL, NULL, -1, {0}, 0, NULL, 0};
     static jail_packet_ctx pkt_ctx =
-        { 0, JC_SERVER, JP_NONE, NULL, NULL };
+        {0, {-1,-1}, JC_SERVER, JP_NONE, NULL, NULL};
     int s, rc = 1;
     event_ctx *ev_ctx = NULL;
     sigset_t mask;
 
     assert(ctx);
-    ev_cli.tty_fd = tty_fd;
 
     event_init(&ev_ctx);
     if (event_setup(ev_ctx)) {
@@ -552,7 +549,8 @@ static int jail_socket_tty(prisoner_process *ctx, int tty_fd)
         goto finish;
     }
 
-    ev_cli.client_sock = &ctx->client_psock;
+    ev_cli.connection.client_fd = ctx->client_psock.fd;
+    ev_cli.connection.jail_fd = tty_fd;
     ev_cli.host_buf = &ctx->host_buf[0];
     ev_cli.service_buf = &ctx->service_buf[0];
 
@@ -571,9 +569,9 @@ finish:
 }
 
 static int
-jail_socket_tty_io(event_ctx *ev_ctx, event_buf *buf, void *user_data)
+jail_socket_tty_io(event_ctx *ev_ctx, int src_fd, void *user_data)
 {
-    int dest_fd, src_fd = buf->fd;
+    int dest_fd;
     client_event *ev_cli = (client_event *) user_data;
     forward_state fwd_state;
 
@@ -581,10 +579,10 @@ jail_socket_tty_io(event_ctx *ev_ctx, event_buf *buf, void *user_data)
     (void) src_fd;
     (void) ev_cli;
 
-    if (src_fd == ev_cli->client_sock->fd) {
-        dest_fd = ev_cli->tty_fd;
-    } else if (src_fd == ev_cli->tty_fd) {
-        dest_fd = ev_cli->client_sock->fd;
+    if (src_fd == ev_cli->connection.client_fd) {
+        dest_fd = ev_cli->connection.jail_fd;
+    } else if (src_fd == ev_cli->connection.jail_fd) {
+        dest_fd = ev_cli->connection.client_fd;
     } else if (src_fd == ev_cli->signal_fd) {
         ev_ctx->active = 0;
         return 0;
@@ -608,18 +606,17 @@ jail_socket_tty_io(event_ctx *ev_ctx, event_buf *buf, void *user_data)
     return 1;
 }
 
-static int jail_log_input(event_ctx *ev_ctx, int src_fd, int dst_fd,
-                          char *buf, size_t siz, void *user_data)
+static int jail_log_input(event_ctx *ev_ctx, event_buf *read_buf,
+                          event_buf *write_buf, void *user_data)
 {
-    size_t idx = 0, slen, ssiz = siz;
+    size_t idx = 0, slen, read_siz = read_buf->buf_used;
     client_event *ev_cli = (client_event *) user_data;
 
     (void) ev_ctx;
-    (void) src_fd;
 
-    if (ev_cli->tty_fd == dst_fd) {
-        while (ssiz > 0) {
-            slen = MIN(sizeof(ev_cli->tty_logbuf) - ev_cli->off_logbuf, ssiz);
+    if (ev_cli->connection.jail_fd == write_buf->fd) {
+        while (read_siz > 0) {
+            slen = MIN(sizeof(ev_cli->tty_logbuf) - ev_cli->off_logbuf, read_siz);
             if (slen == 0) {
                 escape_ascii_string(ev_cli->tty_logbuf, ev_cli->off_logbuf,
                                     &ev_cli->tty_logbuf_escaped, &ev_cli->tty_logbuf_size);
@@ -629,12 +626,14 @@ static int jail_log_input(event_ctx *ev_ctx, int src_fd, int dst_fd,
                 ev_cli->tty_logbuf[0] = 0;
                 continue;
             }
-            strncat(ev_cli->tty_logbuf, buf+idx, slen);
-            ssiz -= slen;
+            strncat(ev_cli->tty_logbuf, read_buf->buf + idx, slen);
+            read_siz -= slen;
             idx += slen;
             ev_cli->off_logbuf += slen;
         }
-        if (buf[siz-1] == '\r' || buf[siz-1] == '\n') {
+        if (read_buf->buf[read_buf->buf_used-1] == '\r' ||
+            read_buf->buf[read_buf->buf_used-1] == '\n')
+        {
             escape_ascii_string(ev_cli->tty_logbuf, ev_cli->off_logbuf,
                                 &ev_cli->tty_logbuf_escaped, &ev_cli->tty_logbuf_size);
             C("[%s:%s] %s", ev_cli->host_buf, ev_cli->service_buf,

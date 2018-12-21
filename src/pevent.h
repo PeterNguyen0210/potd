@@ -37,6 +37,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <string.h>
 
 #include "socket.h"
 
@@ -72,10 +73,10 @@ typedef struct event_ctx {
     size_t buffer_used;
 } event_ctx;
 
-typedef int (*on_event_cb) (event_ctx *ev_ctx, event_buf *buf,
+typedef int (*on_event_cb) (event_ctx *ev_ctx, int src_fd,
                             void *user_data);
-typedef int (*on_data_cb) (event_ctx *ev_ctx, int src_fd, int dst_fd,
-                           char *buf, size_t siz, void *user_data);
+typedef int (*on_data_cb) (event_ctx *ev_ctx, event_buf *read_buf,
+                           event_buf *write_buf, void *user_data);
 
 
 void event_init(event_ctx **ctx);
@@ -96,20 +97,22 @@ forward_state
 event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
                          void *user_data);
 
-#if 0
-int event_get_buffer(event_ctx *ctx, event_buf *wbuf);
-#endif
-
-void event_buffer_to(event_buf *src, event_buf *to);
-
 int event_buf_fill(event_buf *buf, unsigned char *data, size_t size);
 
-ssize_t event_buf_drain(event_buf *buf);
+ssize_t event_buf_drain(event_buf *write_buf);
 
-static inline ssize_t event_buf_read(event_buf *buf)
+static inline ssize_t event_buf_read(event_buf *read_buf)
 {
-    return read(buf->fd, buf->buf + buf->buf_used,
-                sizeof(buf->buf) - buf->buf_used);
+    return read(read_buf->fd, read_buf->buf + read_buf->buf_used,
+                sizeof(read_buf->buf) - read_buf->buf_used);
+}
+
+static inline void event_buf_discard(event_buf *read_buf, size_t siz)
+{
+    if (siz <= read_buf->buf_used) {
+        memmove(read_buf->buf + siz, read_buf->buf, read_buf->buf_used - siz);
+        read_buf->buf_used -= siz;
+    }
 }
 
 #endif

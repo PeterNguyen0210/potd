@@ -53,6 +53,9 @@ static int pkt_respok(jail_packet_ctx *ctx, jail_packet *pkt,
                       event_buf *write_buf);
 static int pkt_resperr(jail_packet_ctx *ctx, jail_packet *pkt,
                        event_buf *write_buf);
+static int jail_packet_io(event_ctx *ctx, int src_fd, void *user_data);
+static int jail_packet_pkt(event_ctx *ev_ctx, event_buf *read_buf,
+                           event_buf *write_buf, void *user_data);
 
 #define PKT_CB(type, cb) \
     { type, cb }
@@ -165,46 +168,77 @@ static int pkt_resperr(jail_packet_ctx *ctx, jail_packet *pkt,
     return 0;
 }
 
-static int jail_packet_forward(event_ctx *ctx, event_buf *buf, void *user_data)
+static int jail_packet_io(event_ctx *ev_ctx, int src_fd, void *user_data)
+{
+    int dest_fd;
+    jail_packet_ctx *pkt_ctx = (jail_packet_ctx *) user_data;
+    forward_state fwd_state;
+
+    (void) ev_ctx;
+    (void) src_fd;
+    (void) pkt_ctx;
+
+    if (src_fd == pkt_ctx->connection.client_fd) {
+        dest_fd = pkt_ctx->connection.jail_fd;
+    } else if (src_fd == pkt_ctx->connection.jail_fd) {
+        dest_fd = pkt_ctx->connection.client_fd;
+    } else return 0;
+
+    fwd_state = event_forward_connection(ev_ctx, dest_fd, jail_packet_pkt,
+                                         user_data);
+
+    switch (fwd_state) {
+        case CON_IN_TERMINATED:
+        case CON_OUT_TERMINATED:
+            ev_ctx->active = 0;
+        case CON_OK:
+            return 1;
+        case CON_IN_ERROR:
+        case CON_OUT_ERROR:
+            ev_ctx->active = 0;
+            return 0;
+    }
+
+    return 1;
+}
+
+static int jail_packet_pkt(event_ctx *ev_ctx, event_buf *read_buf,
+                           event_buf *write_buf, void *user_data)
 {
     jail_packet_ctx *pkt_ctx = (jail_packet_ctx *) user_data;
     jail_packet *pkt;
-    event_buf wbuf;
     ssize_t pkt_siz;
     off_t pkt_off = 0;
 
-    (void) ctx;
-
-    event_buffer_to(buf, &wbuf);
     while (1) {
-        pkt_siz = pkt_header_read((unsigned char *) buf->buf + pkt_off,
-                                  buf->buf_used);
+        pkt_siz = pkt_header_read((unsigned char *) read_buf->buf + pkt_off,
+                                  read_buf->buf_used);
         if (pkt_siz < 0) {
             /* invalid jail packet */
-            ctx->active = 0;
+            ev_ctx->active = 0;
             return 0;
         }
-        pkt = (jail_packet *)(buf->buf + pkt_off);
+        pkt = (jail_packet *)(read_buf->buf + pkt_off);
 
         if (jpc[pkt->type].pc &&
-            jpc[pkt->type].pc(pkt_ctx, pkt, &wbuf))
+            jpc[pkt->type].pc(pkt_ctx, pkt, write_buf))
         {
             pkt_ctx->pstate = JP_INVALID;
             break;
         }
 
         pkt_off += pkt_siz;
-        buf->buf_used -= pkt_siz;
+        read_buf->buf_used -= pkt_siz;
     }
 
     if (pkt_off)
-        memmove(buf->buf, buf->buf + pkt_off, buf->buf_used);
+        memmove(read_buf->buf, read_buf->buf + pkt_off, read_buf->buf_used);
 
-    if (event_buf_drain(&wbuf) < 0)
+    if (event_buf_drain(write_buf) < 0)
         pkt_ctx->pstate = JP_INVALID;
 
     if (pkt_ctx->pstate == JP_NONE || pkt_ctx->pstate == JP_INVALID)
-        ctx->active = 0;
+        ev_ctx->active = 0;
 
     return 1;
 }
@@ -216,7 +250,7 @@ int jail_packet_loop(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
 
     pkt_ctx->pstate = JP_DATA;
 
-    return event_loop(ctx, jail_packet_forward, pkt_ctx);
+    return event_loop(ctx, jail_packet_io, pkt_ctx);
 }
 
 event_ctx *jail_client_handshake(int server_fd, jail_packet_ctx *pkt_ctx)
@@ -260,7 +294,7 @@ event_ctx *jail_client_handshake(int server_fd, jail_packet_ctx *pkt_ctx)
     }
     pkt_ctx->is_valid = 1;
 
-    if (event_loop(ev_ctx, jail_packet_forward, pkt_ctx)) {
+    if (event_loop(ev_ctx, jail_packet_io, pkt_ctx)) {
         E_STRERR("Jail protocol handshake for fd %d failed", server_fd);
         goto finish;
     }
@@ -279,5 +313,5 @@ int jail_server_handshake(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
 
     pkt_ctx->pstate = JP_HANDSHAKE;
 
-    return event_loop(ctx, jail_packet_forward, pkt_ctx);
+    return event_loop(ctx, jail_packet_io, pkt_ctx);
 }

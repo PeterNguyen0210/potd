@@ -52,6 +52,11 @@ typedef struct jail_ctx {
     char *newroot;
 } jail_ctx;
 
+typedef struct jail_con {
+    int client_fd;
+    int jail_fd;
+} jail_con;
+
 
 void jail_init_ctx(jail_ctx **ctx, size_t stacksize);
 
