@@ -97,7 +97,8 @@ forward_state
 event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
                          void *user_data);
 
-int event_buf_fill(event_buf *buf, unsigned char *data, size_t size);
+#define event_buf_dup(read_buf, write_buf) do { event_buf_fill(write_buf, read_buf->buf, read_buf->buf_used); event_buf_discardall(read_buf) } while (0);
+int event_buf_fill(event_buf *buf, char *data, size_t size);
 
 ssize_t event_buf_drain(event_buf *write_buf);
 
@@ -107,6 +108,7 @@ static inline ssize_t event_buf_read(event_buf *read_buf)
                 sizeof(read_buf->buf) - read_buf->buf_used);
 }
 
+#define event_buf_discardall(read_buf) do { event_buf_discard(read_buf, read_buf->buf_used); } while (0);
 static inline void event_buf_discard(event_buf *read_buf, size_t siz)
 {
     if (siz <= read_buf->buf_used) {

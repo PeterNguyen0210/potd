@@ -253,6 +253,7 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
     struct epoll_event *ev;
     struct event_buf *read_buf, write_buf = WRITE_BUF(dest_fd);
 
+    assert(dest_fd >= 0);
     assert(ctx->current_event >= 0 &&
         ctx->current_event < POTD_MAXEVENTS);
     ev = &ctx->events[ctx->current_event];
@@ -295,14 +296,14 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
                read_buf->fd, dest_fd);
             continue;
         } else if (!on_data) {
-            if (event_buf_fill(&write_buf, (unsigned char *) read_buf->buf,
+            if (event_buf_fill(&write_buf, read_buf->buf,
                 read_buf->buf_used))
             {
                 W2("Data copy failed, not forwarding from %d to %d",
                    read_buf->fd, dest_fd);
                 continue;
             } else {
-                event_buf_discard(read_buf, read_buf->buf_used);
+                event_buf_discardall(read_buf);
             }
         }
 
@@ -343,7 +344,7 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
     return rc;
 }
 
-int event_buf_fill(event_buf *buf, unsigned char *data, size_t size)
+int event_buf_fill(event_buf *buf, char *data, size_t size)
 {
     if (size > buf->buf_used && event_buf_drain(buf) < 0)
         return 1;

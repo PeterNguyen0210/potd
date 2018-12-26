@@ -99,8 +99,8 @@ static int pkt_write(event_buf *write_buf, uint8_t type, unsigned char *buf,
     pkt.type = type;
     pkt.size = htons(siz);
 
-    if (event_buf_fill(write_buf, (unsigned char *) &pkt, sizeof pkt) ||
-        (buf && event_buf_fill(write_buf, buf, siz)))
+    if (event_buf_fill(write_buf, (char *) &pkt, sizeof pkt) ||
+        (buf && event_buf_fill(write_buf, (char *) buf, siz)))
     {
         return 1;
     }
@@ -232,7 +232,7 @@ static int jail_packet_pkt(event_ctx *ev_ctx, event_buf *read_buf,
     }
 
     if (pkt_off)
-        memmove(read_buf->buf, read_buf->buf + pkt_off, read_buf->buf_used);
+        event_buf_discard(read_buf, pkt_off);
 
     if (event_buf_drain(write_buf) < 0)
         pkt_ctx->pstate = JP_INVALID;

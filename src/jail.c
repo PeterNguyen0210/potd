@@ -429,6 +429,21 @@ static int jail_childfn(prisoner_process *ctx)
             if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0)
                 exit(EXIT_FAILURE);
 
+#ifdef HAVE_SECCOMP
+            pseccomp_set_immutable();
+            pseccomp_init(&psc,
+                (getopt_used(OPT_SECCOMP_MINIMAL) ? PS_MINIMUM : 0));
+            if (pseccomp_jail_rules(psc))
+                FATAL("%s", "SECCOMP: adding jail rules");
+            pseccomp_free(&psc);
+#else
+            /* libseccomp is not available, so drop at least all caps */
+            W2("%s", "Compiled without libseccomp, dropping ALL capabilities");
+            caps_drop_all();
+#endif
+
+            if (sethostname("openwrt", SIZEOF("openwrt")))
+                exit(EXIT_FAILURE);
             printf("%s",
                 "  _______                     ________        __\n"
                 " |       |.-----.-----.-----.|  |  |  |.----.|  |_\n"
@@ -447,22 +462,6 @@ static int jail_childfn(prisoner_process *ctx)
                 "  * 1 splash Cranberry juice\n"
                 " -----------------------------------------------------\n"
             );
-
-#ifdef HAVE_SECCOMP
-            pseccomp_set_immutable();
-            pseccomp_init(&psc,
-                (getopt_used(OPT_SECCOMP_MINIMAL) ? PS_MINIMUM : 0));
-            if (pseccomp_jail_rules(psc))
-                FATAL("%s", "SECCOMP: adding jail rules");
-            pseccomp_free(&psc);
-#else
-            /* libseccomp is not available, so drop at least all caps */
-            W2("%s", "Compiled without libseccomp, dropping ALL capabilities");
-            caps_drop_all();
-#endif
-
-            if (sethostname("openwrt", SIZEOF("openwrt")))
-                exit(EXIT_FAILURE);
             /* Flawfinder: ignore */
             if (execl(path_shell, path_shell, (char *) NULL))
                 exit(EXIT_FAILURE);
@@ -549,8 +548,8 @@ static int jail_socket_tty(prisoner_process *ctx, int tty_fd)
         goto finish;
     }
 
-    ev_cli.connection.client_fd = ctx->client_psock.fd;
-    ev_cli.connection.jail_fd = tty_fd;
+    pkt_ctx.connection.client_fd = ev_cli.connection.client_fd = ctx->client_psock.fd;
+    pkt_ctx.connection.jail_fd = ev_cli.connection.jail_fd = tty_fd;
     ev_cli.host_buf = &ctx->host_buf[0];
     ev_cli.service_buf = &ctx->service_buf[0];
 
@@ -642,6 +641,8 @@ static int jail_log_input(event_ctx *ev_ctx, event_buf *read_buf,
             ev_cli->tty_logbuf[0] = 0;
         }
     }
+
+    event_buf_dup(read_buf, write_buf);
 
     return 0;
 }
