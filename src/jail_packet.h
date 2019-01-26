@@ -47,19 +47,33 @@
  * Server: jail_packet(RESP_*)
  */
 #define PKT_HELLO   0x1
+/* Client: jail_packet(PKT_USER)) + user
+ * Server: -
+ */
 #define PKT_USER    0x2
+/* Client: jail_packet(PKT_PASS) + pass
+ * Server: -
+ */
 #define PKT_PASS    0x3
+/* Client: jail_packet(PKT_START)
+ * Server: jail_packet(RESP_*)
+ */
 #define PKT_START   0x4
+/* Client: jail_packet(PKT_DATA)
+ * Server: - or jail_packet(PKT_DATA)
+ */
 #define PKT_DATA    0x5
+
 #define PKT_RESPOK  0x6
 #define PKT_RESPERR 0x7
 
 typedef enum jail_packet_state {
-    JP_INVALID = 0, JP_NONE, JP_HANDSHAKE, JP_DATA
+    JP_INVALID = 0, JP_NONE, JP_HANDSHAKE, JP_START, JP_DATA
 } jail_packet_state;
 
 typedef enum jail_ctx_type {
-    JC_INVALID = 0, JC_CLIENT, JC_SERVER
+    JC_INVALID = 0, JC_CLIENT /* protocol handler */,
+                    JC_SERVER /* jail service */
 } jail_ctx_type;
 
 #define USER_LEN 255
