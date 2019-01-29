@@ -259,7 +259,7 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
     ev = &ctx->events[ctx->current_event];
     read_buf = (event_buf *) ev->data.ptr;
 
-    while (data_avail) {
+    while (data_avail && ctx->active && !ctx->has_error) {
         saved_errno = 0;
         siz = -1;
 
@@ -278,6 +278,7 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
                 rc = CON_IN_ERROR;
                 break;
             case 0:
+                ctx->active = 0;
                 rc = CON_IN_TERMINATED;
                 break;
             default:
@@ -317,12 +318,13 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
                     rc = CON_OUT_ERROR;
                     break;
                 case 0:
+                    ctx->active = 0;
                     rc = CON_OUT_TERMINATED;
                     break;
                 default:
                     if (write_buf.buf_used) {
-                        W2("Written only %zd bytes (remaining %zu bytes "
-                           "are lost) from %d to %d", siz, write_buf.buf_used,
+                        W2("Written only %zd bytes (remaining %zu bytes) "
+                           "from %d to %d", siz, write_buf.buf_used,
                            read_buf->fd, write_buf.fd);
                     } else {
                         D2("Written %zd bytes from fd %d to fd %d",

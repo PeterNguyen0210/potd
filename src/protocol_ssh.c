@@ -748,6 +748,7 @@ static int client_mainloop(ssh_client *data, jail_packet_ctx *pkt_ctx)
     ssh_event event;
     short events;
     forward_ctx *ctx = &data->dst;
+    struct event_ctx *ev_ctx;
 
     if (fwd_connect_sock(ctx, NULL)) {
         E_STRERR("Connection to %s:%s",
@@ -756,7 +757,11 @@ static int client_mainloop(ssh_client *data, jail_packet_ctx *pkt_ctx)
         return 1;
     }
 
-    jail_client_handshake(ctx->sock.fd, pkt_ctx);
+    ev_ctx = jail_client_handshake(ctx->sock.fd, pkt_ctx);
+    if (!ev_ctx) {
+        ssh_channel_close(chan);
+        return 1;
+    }
 
     ssh_channel_cb.userdata = &ctx->sock.fd;
     ssh_callbacks_init(&ssh_channel_cb);
@@ -767,14 +772,19 @@ static int client_mainloop(ssh_client *data, jail_packet_ctx *pkt_ctx)
 
     if (event == NULL) {
         E2("%s", "Couldn't get a event");
+        event_free(&ev_ctx);
         return 1;
     }
-    if (ssh_event_add_fd(event, ctx->sock.fd, events, copy_fd_to_chan, chan) != SSH_OK) {
+    if (ssh_event_add_fd(event, ctx->sock.fd, events, copy_fd_to_chan,
+        chan) != SSH_OK)
+    {
         E2("Couldn't add fd %d to the event queue", ctx->sock.fd);
+        event_free(&ev_ctx);
         return 1;
     }
     if (ssh_event_add_session(event, session) != SSH_OK) {
         E2("%s", "Couldn't add the session to the event");
+        event_free(&ev_ctx);
         return 1;
     }
 
@@ -786,16 +796,18 @@ static int client_mainloop(ssh_client *data, jail_packet_ctx *pkt_ctx)
     ssh_event_remove_fd(event, ctx->sock.fd);
     ssh_event_remove_session(event, session);
     ssh_event_free(event);
+    event_free(&ev_ctx);
+
     return 0;
 }
 
 static int copy_fd_to_chan(socket_t fd, int revents, void *userdata)
 {
-    ssh_channel chan = (ssh_channel)userdata;
+    ssh_channel chan = (ssh_channel) userdata;
     char buf[BUFSIZ];
     int sz = 0;
 
-    if(!chan) {
+    if (!chan) {
         close(fd);
         return -1;
     }
@@ -820,7 +832,7 @@ static int copy_chan_to_fd(ssh_session session,
                            int is_stderr,
                            void *userdata)
 {
-    int fd = *(int*) userdata;
+    int fd = *(int *) userdata;
     int sz;
 
     (void) session;
@@ -836,7 +848,7 @@ static int copy_chan_to_fd(ssh_session session,
 static void chan_close(ssh_session session, ssh_channel channel,
                        void *userdata)
 {
-    int fd = *(int*) userdata;
+    int fd = *(int *) userdata;
 
     (void) session;
     (void) channel;

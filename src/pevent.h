@@ -45,6 +45,7 @@
 #define POTD_MAXEVENTS 64
 #define POTD_EVENTBUF_REALLOCSIZ 5
 #define WRITE_BUF(fd) { fd, {0}, 0, NULL }
+#define EMPTY_BUF { -1, {0}, 0, NULL }
 
 typedef enum forward_state {
     CON_OK, CON_IN_TERMINATED, CON_OUT_TERMINATED,

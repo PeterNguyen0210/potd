@@ -43,6 +43,8 @@
 #define MIN_STACKSIZE 2048
 #define MAX_STACKSIZE BUFSIZ
 
+#define EMPTY_JAILCON { -1, -1 }
+
 typedef struct jail_ctx {
     forward_ctx fwd_ctx;
     char host_buf[NI_MAXHOST], service_buf[NI_MAXSERV];

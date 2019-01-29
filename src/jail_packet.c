@@ -25,10 +25,10 @@ typedef struct jail_packet {
 #define JP_MAGIC1 0xDEADC0DE
 #define JP_MAGIC2 0xDEADBEEF
 
-typedef struct jail_packet_hello {
+typedef struct jail_packet_handshake {
     uint32_t magic1;
     uint32_t magic2;
-} JP_ATTRS jail_packet_hello;
+} JP_ATTRS jail_packet_handshake;
 
 typedef int (*packet_callback)(jail_packet_ctx *ctx, jail_packet *pkt,
                                event_buf *write_buf);
@@ -39,12 +39,14 @@ typedef struct jail_packet_callback {
 } jail_packet_callback;
 
 static ssize_t pkt_header_read(unsigned char *buf, size_t siz);
-static int pkt_hello(jail_packet_ctx *ctx, jail_packet *pkt,
-                     event_buf *write_buf);
+static int pkt_handshake(jail_packet_ctx *ctx, jail_packet *pkt,
+                         event_buf *write_buf);
 static int pkt_user(jail_packet_ctx *ctx, jail_packet *pkt,
                     event_buf *write_buf);
 static int pkt_pass(jail_packet_ctx *ctx, jail_packet *pkt,
                     event_buf *write_buf);
+static int pkt_handshake_end(jail_packet_ctx *ctx, jail_packet *pkt,
+                             event_buf *write_buf);
 static int pkt_start(jail_packet_ctx *ctx, jail_packet *pkt,
                      event_buf *write_buf);
 static int pkt_data(jail_packet_ctx *ctx, jail_packet *pkt,
@@ -61,9 +63,10 @@ static int jail_packet_pkt(event_ctx *ev_ctx, event_buf *read_buf,
     { type, cb }
 static const jail_packet_callback jpc[] = {
     PKT_CB(PKT_INVALID, NULL),
-    PKT_CB(PKT_HELLO,   pkt_hello),
+    PKT_CB(PKT_HANDSHAKE, pkt_handshake),
     PKT_CB(PKT_USER,    pkt_user),
     PKT_CB(PKT_PASS,    pkt_pass),
+    PKT_CB(PKT_HANDSHAKE_END, pkt_handshake_end),
     PKT_CB(PKT_START,   pkt_start),
     PKT_CB(PKT_DATA,    pkt_data),
     PKT_CB(PKT_RESPOK,  pkt_respok),
@@ -73,43 +76,55 @@ static const jail_packet_callback jpc[] = {
 
 static ssize_t pkt_header_read(unsigned char *buf, size_t siz)
 {
+    uint16_t pkt_size;
     jail_packet *pkt;
 
     if (siz < sizeof(*pkt))
-        return -1;
+        return 0;
     pkt = (jail_packet *) buf;
 
     if (pkt->type >= SIZEOF(jpc))
         return -1;
 
-    pkt->size = ntohs(pkt->size);
-    if (siz < pkt->size)
+    pkt_size = ntohs(pkt->size);
+    if (pkt_size > PKT_MAXSIZ - sizeof(*pkt))
+        return -1;
+    if (siz < pkt_size)
         return 0;
 
-    return pkt->size + sizeof(*pkt);
+    pkt->size = pkt_size;
+    return pkt_size + sizeof(*pkt);
 }
 
 static int pkt_write(event_buf *write_buf, uint8_t type, unsigned char *buf,
                      size_t siz)
 {
+    uint16_t pkt_size;
     jail_packet pkt;
 
     pkt.type = type;
-    pkt.size = htons(siz);
+    pkt_size = siz;
 
-    if (event_buf_fill(write_buf, (char *) &pkt, sizeof pkt) ||
-        (buf && event_buf_fill(write_buf, (char *) buf, siz)))
-    {
-        return 1;
-    }
+    do {
+        pkt_size = (siz > PKT_MAXSIZ - sizeof(pkt) ?
+            PKT_MAXSIZ - sizeof(pkt) : pkt_size);
+        pkt.size = htons(pkt_size);
+
+        if (event_buf_fill(write_buf, (char *) &pkt, sizeof pkt) ||
+            (buf && event_buf_fill(write_buf, (char *) buf, pkt_size)))
+        {
+            return 1;
+        }
+        siz -= pkt_size;
+    } while (siz > 0);
 
     return 0;
 }
 
-static int pkt_hello(jail_packet_ctx *ctx, jail_packet *pkt,
-                     event_buf *write_buf)
+static int pkt_handshake(jail_packet_ctx *ctx, jail_packet *pkt,
+                         event_buf *write_buf)
 {
-    jail_packet_hello *pkt_hello;
+    jail_packet_handshake *pkt_hello;
 
     if (ctx->ctype != JC_SERVER)
         return 1;
@@ -117,7 +132,7 @@ static int pkt_hello(jail_packet_ctx *ctx, jail_packet *pkt,
     printf("HELLO !!!\n");
     if (ctx->pstate != JP_HANDSHAKE)
         return 1;
-    pkt_hello = (jail_packet_hello *) PKT_SUB(pkt);
+    pkt_hello = (jail_packet_handshake *) PKT_SUB(pkt);
     pkt_hello->magic1 = ntohl(pkt_hello->magic1);
     pkt_hello->magic2 = ntohl(pkt_hello->magic2);
     if (pkt_hello->magic1 != JP_MAGIC1 ||
@@ -126,10 +141,10 @@ static int pkt_hello(jail_packet_ctx *ctx, jail_packet *pkt,
         return 1;
     }
 
-    if (pkt_write(write_buf, PKT_RESPOK, NULL, 0))
+    if (pkt_write(&ctx->writeback_buf, PKT_RESPOK, NULL, 0))
         return 1;
 
-    ctx->pstate = JP_START;
+    ctx->pstate = JP_HANDSHAKE_END;
 
     return 0;
 }
@@ -137,33 +152,72 @@ static int pkt_hello(jail_packet_ctx *ctx, jail_packet *pkt,
 static int pkt_user(jail_packet_ctx *ctx, jail_packet *pkt,
                     event_buf *write_buf)
 {
+    char *user;
+
     (void) write_buf;
 
-    if (ctx->ctype != JC_SERVER || ctx->pstate != JP_START)
+    if (ctx->ctype != JC_SERVER || ctx->pstate != JP_HANDSHAKE_END ||
+        !pkt->size || pkt->size > USER_LEN)
+    {
         return 1;
+    }
+    user = (char *) PKT_SUB(pkt);
+    ctx->user = strndup(user, pkt->size);
 
-    printf("USER !!!\n");
+    printf("USER: '%s' !!!\n", ctx->user);
     return 0;
 }
 
 static int pkt_pass(jail_packet_ctx *ctx, jail_packet *pkt,
                     event_buf *write_buf)
 {
+    char *pass;
+
     (void) write_buf;
 
-    if (ctx->ctype != JC_SERVER || ctx->pstate != JP_START)
+    if (ctx->ctype != JC_SERVER || ctx->pstate != JP_HANDSHAKE_END ||
+        !pkt->size || pkt->size > PASS_LEN)
+    {
         return 1;
+    }
+    pass = (char *) PKT_SUB(pkt);
+    ctx->pass = strndup(pass, pkt->size);
 
-    printf("PASS !!!\n");
+    printf("PASS: '%s' !!!\n", ctx->pass);
+    return 0;
+}
+
+static int pkt_handshake_end(jail_packet_ctx *ctx, jail_packet *pkt,
+                             event_buf *write_buf)
+{
+    (void) write_buf;
+
+    if (ctx->ctype != JC_SERVER || ctx->pstate != JP_HANDSHAKE_END ||
+        pkt->size)
+    {
+        return 1;
+    }
+
+    ctx->is_valid = 1;
+
+    printf("HANDSHAKE END !!!\n");
     return 0;
 }
 
 static int pkt_start(jail_packet_ctx *ctx, jail_packet *pkt,
                      event_buf *write_buf)
 {
-    if (ctx->ctype != JC_SERVER || ctx->pstate != JP_START)
+    if (ctx->ctype != JC_SERVER || ctx->pstate != JP_START ||
+        pkt->size)
+    {
         return 1;
+    }
 
+    (void) write_buf;
+    ctx->pstate = JP_DATA;
+
+    if (pkt_write(&ctx->writeback_buf, PKT_RESPOK, NULL, 0))
+        return 1;
     printf("START !!!\n");
     return 0;
 }
@@ -171,18 +225,47 @@ static int pkt_start(jail_packet_ctx *ctx, jail_packet *pkt,
 static int pkt_data(jail_packet_ctx *ctx, jail_packet *pkt,
                     event_buf *write_buf)
 {
+    unsigned char *data = PKT_SUB(pkt);
+
+    if (ctx->ctype == JC_SERVER) {
+        if (event_buf_fill(write_buf, (char *) data, pkt->size))
+            return 1;
+    } else if (ctx->ctype == JC_CLIENT) {
+    } else {
+        return 1;
+    }
+
+    printf("DATA !!! _%d_%d_\n", ctx->ctype, ctx->pstate);
     return 0;
 }
 
 static int pkt_respok(jail_packet_ctx *ctx, jail_packet *pkt,
                       event_buf *write_buf)
 {
+    if (ctx->ctype == JC_CLIENT) {
+        switch (ctx->pstate) {
+            case JP_HANDSHAKE:
+                ctx->pstate = JP_HANDSHAKE_END;
+                printf("RESP CLIENT HANDSHAKE END !!!\n");
+                break;
+            case JP_START:
+                ctx->pstate = JP_DATA;
+                printf("RESP CLIENT DATA !!!\n");
+                break;
+            default: return 1;
+        }
+    } else return 1;
+
     return 0;
 }
 
 static int pkt_resperr(jail_packet_ctx *ctx, jail_packet *pkt,
                        event_buf *write_buf)
 {
+    (void) ctx;
+    (void) pkt;
+    (void) write_buf;
+
     return 1;
 }
 
@@ -196,7 +279,9 @@ static int jail_packet_io(event_ctx *ev_ctx, int src_fd, void *user_data)
     (void) src_fd;
     (void) pkt_ctx;
 
-    if (src_fd == pkt_ctx->connection.client_fd) {
+    if (pkt_ctx->ctype == JC_CLIENT) {
+        dest_fd = src_fd;
+    } else if (src_fd == pkt_ctx->connection.client_fd) {
         dest_fd = pkt_ctx->connection.jail_fd;
     } else if (src_fd == pkt_ctx->connection.jail_fd) {
         dest_fd = pkt_ctx->connection.client_fd;
@@ -213,7 +298,7 @@ static int jail_packet_io(event_ctx *ev_ctx, int src_fd, void *user_data)
             return 1;
         case CON_IN_ERROR:
         case CON_OUT_ERROR:
-            ev_ctx->active = 0;
+            ev_ctx->has_error = 1;
             return 0;
     }
 
@@ -228,16 +313,41 @@ static int jail_packet_pkt(event_ctx *ev_ctx, event_buf *read_buf,
     ssize_t pkt_siz;
     off_t pkt_off = 0;
 
+    if (read_buf->fd == pkt_ctx->connection.jail_fd &&
+        pkt_ctx->ctype == JC_SERVER)
+    {
+        if (pkt_ctx->pstate != JP_DATA)
+            return 0;
+
+        if (pkt_write(&pkt_ctx->writeback_buf, PKT_DATA,
+                      (unsigned char *) read_buf->buf,
+                      read_buf->buf_used))
+        {
+            return 1;
+        }
+
+        if (event_buf_drain(&pkt_ctx->writeback_buf) < 0)
+            return 1;
+        event_buf_discardall(read_buf);
+        return 0;
+    } else
+    if (read_buf->fd != pkt_ctx->connection.client_fd &&
+        pkt_ctx->ctype != JC_CLIENT)
+    {
+        W2("Unknown fd %d for jail packet", read_buf->fd);
+        return 0;
+    }
+
     while (1) {
         pkt_siz = pkt_header_read((unsigned char *) read_buf->buf + pkt_off,
                                   read_buf->buf_used);
         if (pkt_siz < 0) {
             /* invalid jail packet */
-            ev_ctx->active = 0;
-            return 0;
+            pkt_ctx->pstate = JP_INVALID;
+            break;
         } else if (pkt_siz == 0)
             /* require more data */
-            return 0;
+            break;
 
         pkt = (jail_packet *)(read_buf->buf + pkt_off);
         if (jpc[pkt->type].pc &&
@@ -256,21 +366,40 @@ static int jail_packet_pkt(event_ctx *ev_ctx, event_buf *read_buf,
 
     if (event_buf_drain(write_buf) < 0)
         pkt_ctx->pstate = JP_INVALID;
+    if (event_buf_drain(&pkt_ctx->writeback_buf) < 0)
+        pkt_ctx->pstate = JP_INVALID;
 
-    if (pkt_ctx->pstate == JP_NONE || pkt_ctx->pstate == JP_INVALID)
+    if (pkt_ctx->pstate == JP_NONE        /* default value not allowed */
+        || pkt_ctx->pstate == JP_INVALID) /* an invalid state */
+    {
+        ev_ctx->has_error = 1;
+        return 1;
+    }
+
+    if (pkt_ctx->pstate == JP_HANDSHAKE_END)
         ev_ctx->active = 0;
 
-    return 1;
+    return 0;
 }
 
-int jail_packet_loop(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
+int jail_data_start(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
 {
     assert(ctx && pkt_ctx);
-    assert(pkt_ctx->pstate == JP_HANDSHAKE);
+    assert(pkt_ctx->pstate == JP_HANDSHAKE_END);
+    assert(pkt_ctx->connection.client_fd >= 0 &&
+           pkt_ctx->connection.jail_fd < 0);
 
-    pkt_ctx->pstate = JP_DATA;
+    pkt_ctx->pstate = JP_START;
+    return event_loop(ctx, jail_packet_io, pkt_ctx) || ctx->has_error;
+}
 
-    return event_loop(ctx, jail_packet_io, pkt_ctx);
+int jail_data_loop(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
+{
+    assert(ctx && pkt_ctx);
+    assert(pkt_ctx->pstate == JP_DATA || pkt_ctx->ctype != JC_CLIENT);
+    assert(pkt_ctx->pstate == JP_START || pkt_ctx->ctype != JC_SERVER);
+
+    return event_loop(ctx, jail_packet_io, pkt_ctx) || ctx->has_error;
 }
 
 event_ctx *jail_client_handshake(int server_fd, jail_packet_ctx *pkt_ctx)
@@ -278,7 +407,7 @@ event_ctx *jail_client_handshake(int server_fd, jail_packet_ctx *pkt_ctx)
     event_ctx *ev_ctx = NULL;
     event_buf write_buf = WRITE_BUF(server_fd);
     size_t user_len, pass_len;
-    jail_packet_hello ph;
+    jail_packet_handshake pkt_hello;
 
     assert(pkt_ctx);
     assert(pkt_ctx->pstate == JP_NONE);
@@ -292,15 +421,19 @@ event_ctx *jail_client_handshake(int server_fd, jail_packet_ctx *pkt_ctx)
             server_fd);
         goto finish;
     }
+    if (set_fd_nonblock(server_fd)) {
+        E_STRERR("Jail protocol nonblock for %d", server_fd);
+        goto finish;
+    }
     if (event_add_fd(ev_ctx, server_fd, NULL)) {
         E_STRERR("Jail protocol event context for fd %d", server_fd);
         goto finish;
     }
 
-    ph.magic1 = htonl(JP_MAGIC1);
-    ph.magic2 = htonl(JP_MAGIC2);
-    if (pkt_write(&write_buf, PKT_HELLO,
-                  (unsigned char *) &ph, sizeof(ph)))
+    pkt_hello.magic1 = htonl(JP_MAGIC1);
+    pkt_hello.magic2 = htonl(JP_MAGIC2);
+    if (pkt_write(&write_buf, PKT_HANDSHAKE,
+                  (unsigned char *) &pkt_hello, sizeof(pkt_hello)))
     {
         goto finish;
     }
@@ -322,15 +455,19 @@ event_ctx *jail_client_handshake(int server_fd, jail_packet_ctx *pkt_ctx)
         }
     }
 
-    if (pkt_write(&write_buf, PKT_START, NULL, 0))
+    if (pkt_write(&write_buf, PKT_HANDSHAKE_END, NULL, 0))
         goto finish;
 
     if (event_buf_drain(&write_buf) < 0)
         goto finish;
-    pkt_ctx->is_valid = 1;
 
-    if (event_loop(ev_ctx, jail_packet_io, pkt_ctx)) {
-        E_STRERR("Jail protocol handshake for fd %d failed", server_fd);
+    pkt_ctx->is_valid = 1;
+    pkt_ctx->writeback_buf = write_buf;
+
+    if (event_loop(ev_ctx, jail_packet_io, pkt_ctx) || ev_ctx->has_error ||
+        pkt_ctx->pstate != JP_HANDSHAKE_END || !pkt_ctx->is_valid)
+    {
+        W_STRERR("Jail protocol handshake for fd %d", server_fd);
         goto finish;
     }
 
@@ -342,11 +479,18 @@ finish:
 
 int jail_server_handshake(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
 {
+    int rc;
+
     assert(ctx && pkt_ctx);
     assert(pkt_ctx->pstate == JP_NONE);
     assert(pkt_ctx->ctype == JC_SERVER);
 
+    struct event_buf write_buf = WRITE_BUF(pkt_ctx->connection.client_fd);
     pkt_ctx->pstate = JP_HANDSHAKE;
+    pkt_ctx->writeback_buf = write_buf;
 
-    return event_loop(ctx, jail_packet_io, pkt_ctx);
+    rc = event_loop(ctx, jail_packet_io, pkt_ctx);
+    if (!rc && pkt_ctx->is_valid)
+        pkt_ctx->pstate = JP_START;
+    return rc;
 }
