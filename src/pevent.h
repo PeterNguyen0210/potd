@@ -98,24 +98,45 @@ forward_state
 event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
                          void *user_data);
 
-#define event_buf_dup(read_buf, write_buf) do { event_buf_fill(write_buf, read_buf->buf, read_buf->buf_used); event_buf_discardall(read_buf) } while (0);
 int event_buf_fill(event_buf *buf, char *data, size_t size);
 
 ssize_t event_buf_drain(event_buf *write_buf);
 
-static inline ssize_t event_buf_read(event_buf *read_buf)
+static inline size_t event_buf_avail(event_buf *buf)
 {
-    return read(read_buf->fd, read_buf->buf + read_buf->buf_used,
-                sizeof(read_buf->buf) - read_buf->buf_used);
+    return sizeof(buf->buf) - buf->buf_used;
 }
 
-#define event_buf_discardall(read_buf) do { event_buf_discard(read_buf, read_buf->buf_used); } while (0);
-static inline void event_buf_discard(event_buf *read_buf, size_t siz)
+static inline ssize_t event_buf_read(event_buf *read_buf)
 {
-    if (siz <= read_buf->buf_used) {
-        memmove(read_buf->buf + siz, read_buf->buf, read_buf->buf_used - siz);
-        read_buf->buf_used -= siz;
+    ssize_t siz;
+
+    siz = read(read_buf->fd, read_buf->buf + read_buf->buf_used,
+               event_buf_avail(read_buf));
+    if (siz > 0)
+        read_buf->buf_used += siz;
+    return siz;
+}
+
+static inline void event_buf_discard(event_buf *input, size_t siz)
+{
+    if (siz <= input->buf_used) {
+        memmove(input->buf + siz, input->buf, input->buf_used - siz);
+        input->buf_used -= siz;
     }
+}
+
+static inline void event_buf_discardall(event_buf *input)
+{
+    event_buf_discard(input, input->buf_used);
+}
+
+static inline int event_buf_dup(event_buf *input, event_buf *output)
+{
+    int rc = event_buf_fill(output, input->buf, input->buf_used);
+    if (!rc)
+        event_buf_discardall(input);
+    return rc;
 }
 
 #endif

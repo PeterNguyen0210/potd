@@ -282,7 +282,6 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
                 rc = CON_IN_TERMINATED;
                 break;
             default:
-                read_buf->buf_used += siz;
                 D2("Read %zu bytes from fd %d", siz, read_buf->fd);
                 break;
         }
@@ -348,10 +347,11 @@ event_forward_connection(event_ctx *ctx, int dest_fd, on_data_cb on_data,
 
 int event_buf_fill(event_buf *buf, char *data, size_t size)
 {
-    if (size > buf->buf_used && event_buf_drain(buf) < 0)
+    if (size > event_buf_avail(buf) &&
+        event_buf_drain(buf) < 0)
+    {
         return 1;
-    if (size > sizeof(buf->buf))
-        return 1;
+    }
     memcpy(buf->buf + buf->buf_used, data, size);
     buf->buf_used += size;
 
@@ -362,7 +362,7 @@ ssize_t event_buf_drain(event_buf *buf)
 {
     ssize_t written;
 
-    if (!buf->buf_used)
+    if (!buf->buf_used || buf->fd < 0)
         return 0;
 
     written = write(buf->fd, buf->buf, buf->buf_used);

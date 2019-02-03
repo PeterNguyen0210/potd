@@ -92,10 +92,6 @@ static int jail_accept_client(event_ctx *ev_ctx, int src_fd,
 static int jail_childfn(prisoner_process *ctx)
     __attribute__((noreturn));
 static int jail_socket_tty(prisoner_process *ctx, int tty_fd);
-static int jail_socket_tty_io(event_ctx *ev_ctx, int src_fd,
-                              void *user_data);
-static int jail_log_input(event_ctx *ev_ctx, event_buf *read_buf,
-                          event_buf *write_buf, void *user_data);
 
 
 void jail_init_ctx(jail_ctx **ctx, size_t stacksize)
@@ -501,7 +497,7 @@ static int jail_socket_tty(prisoner_process *ctx, int tty_fd)
 {
     static client_event ev_cli = {{-1,-1}, NULL, NULL, -1, {0}, 0, NULL, 0};
     static jail_packet_ctx pkt_ctx =
-        {0, EMPTY_JAILCON, EMPTY_BUF, JC_SERVER, JP_NONE, NULL, NULL};
+        {0, 0, 1, EMPTY_JAILCON, EMPTY_BUF, JC_SERVER, JP_NONE, NULL, NULL};
     int s, rc = 1;
     event_ctx *ev_ctx = NULL;
     sigset_t mask;
@@ -554,19 +550,19 @@ static int jail_socket_tty(prisoner_process *ctx, int tty_fd)
     ev_cli.service_buf = &ctx->service_buf[0];
 
     if (!jail_server_handshake(ev_ctx, &pkt_ctx) && pkt_ctx.is_valid) {
-        N("Using Jail protocol for %s:%s", ctx->host_buf, ctx->service_buf);
-        rc = jail_data_loop(ev_ctx, &pkt_ctx);
+        N("Using Jail protocol for %s:%s",
+            ctx->host_buf, ctx->service_buf);
+        rc = jail_server_loop(ev_ctx, &pkt_ctx);
     } else {
-        N("Using raw Jail communication for %s:%s", ctx->host_buf,
-            ctx->service_buf);
+        E("Jail protocol handshake failed for %s:%s",
+            ctx->host_buf, ctx->service_buf);
     }
-    rc = event_loop(ev_ctx, jail_socket_tty_io, &ev_cli);
 finish:
-    close(ev_cli.signal_fd);
     event_free(&ev_ctx);
     return rc;
 }
 
+#if 0
 static int
 jail_socket_tty_io(event_ctx *ev_ctx, int src_fd, void *user_data)
 {
@@ -646,3 +642,4 @@ static int jail_log_input(event_ctx *ev_ctx, event_buf *read_buf,
 
     return 0;
 }
+#endif

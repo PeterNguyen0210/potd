@@ -129,7 +129,6 @@ static int pkt_handshake(jail_packet_ctx *ctx, jail_packet *pkt,
     if (ctx->ctype != JC_SERVER)
         return 1;
 
-    printf("HELLO !!!\n");
     if (ctx->pstate != JP_HANDSHAKE)
         return 1;
     pkt_hello = (jail_packet_handshake *) PKT_SUB(pkt);
@@ -164,7 +163,6 @@ static int pkt_user(jail_packet_ctx *ctx, jail_packet *pkt,
     user = (char *) PKT_SUB(pkt);
     ctx->user = strndup(user, pkt->size);
 
-    printf("USER: '%s' !!!\n", ctx->user);
     return 0;
 }
 
@@ -183,7 +181,6 @@ static int pkt_pass(jail_packet_ctx *ctx, jail_packet *pkt,
     pass = (char *) PKT_SUB(pkt);
     ctx->pass = strndup(pass, pkt->size);
 
-    printf("PASS: '%s' !!!\n", ctx->pass);
     return 0;
 }
 
@@ -199,8 +196,8 @@ static int pkt_handshake_end(jail_packet_ctx *ctx, jail_packet *pkt,
     }
 
     ctx->is_valid = 1;
+    ctx->ev_active = 0;
 
-    printf("HANDSHAKE END !!!\n");
     return 0;
 }
 
@@ -218,7 +215,7 @@ static int pkt_start(jail_packet_ctx *ctx, jail_packet *pkt,
 
     if (pkt_write(&ctx->writeback_buf, PKT_RESPOK, NULL, 0))
         return 1;
-    printf("START !!!\n");
+
     return 0;
 }
 
@@ -227,15 +224,15 @@ static int pkt_data(jail_packet_ctx *ctx, jail_packet *pkt,
 {
     unsigned char *data = PKT_SUB(pkt);
 
-    if (ctx->ctype == JC_SERVER) {
+    if (ctx->ctype == JC_SERVER || ctx->ctype == JC_CLIENT) {
         if (event_buf_fill(write_buf, (char *) data, pkt->size))
             return 1;
-    } else if (ctx->ctype == JC_CLIENT) {
+        if (ctx->ctype == JC_CLIENT)
+            ctx->ev_active = 0;
     } else {
         return 1;
     }
 
-    printf("DATA !!! _%d_%d_\n", ctx->ctype, ctx->pstate);
     return 0;
 }
 
@@ -246,11 +243,11 @@ static int pkt_respok(jail_packet_ctx *ctx, jail_packet *pkt,
         switch (ctx->pstate) {
             case JP_HANDSHAKE:
                 ctx->pstate = JP_HANDSHAKE_END;
-                printf("RESP CLIENT HANDSHAKE END !!!\n");
+                ctx->ev_active = 0;
                 break;
             case JP_START:
                 ctx->pstate = JP_DATA;
-                printf("RESP CLIENT DATA !!!\n");
+                ctx->ev_active = 0;
                 break;
             default: return 1;
         }
@@ -329,6 +326,7 @@ static int jail_packet_pkt(event_ctx *ev_ctx, event_buf *read_buf,
         if (event_buf_drain(&pkt_ctx->writeback_buf) < 0)
             return 1;
         event_buf_discardall(read_buf);
+
         return 0;
     } else
     if (read_buf->fd != pkt_ctx->connection.client_fd &&
@@ -339,6 +337,10 @@ static int jail_packet_pkt(event_ctx *ev_ctx, event_buf *read_buf,
     }
 
     while (1) {
+        /* FIXME: not optimal for preventing buffer bloats */
+        if (event_buf_avail(write_buf) < PKT_MAXSIZ)
+            break;
+
         pkt_siz = pkt_header_read((unsigned char *) read_buf->buf + pkt_off,
                                   read_buf->buf_used);
         if (pkt_siz < 0) {
@@ -376,28 +378,54 @@ static int jail_packet_pkt(event_ctx *ev_ctx, event_buf *read_buf,
         return 1;
     }
 
-    if (pkt_ctx->pstate == JP_HANDSHAKE_END)
-        ev_ctx->active = 0;
+    ev_ctx->active = pkt_ctx->ev_active;
 
     return 0;
 }
 
-int jail_data_start(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
+int jail_client_send(jail_packet_ctx *pkt_ctx, unsigned char *buf, size_t siz)
 {
-    assert(ctx && pkt_ctx);
-    assert(pkt_ctx->pstate == JP_HANDSHAKE_END);
-    assert(pkt_ctx->connection.client_fd >= 0 &&
-           pkt_ctx->connection.jail_fd < 0);
-
-    pkt_ctx->pstate = JP_START;
-    return event_loop(ctx, jail_packet_io, pkt_ctx) || ctx->has_error;
+    if (pkt_write(&pkt_ctx->writeback_buf, PKT_DATA, buf, siz) ||
+        event_buf_drain(&pkt_ctx->writeback_buf) < 0)
+    {
+        return 1;
+    }
+    return 0;
 }
 
-int jail_data_loop(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
+int jail_client_data(event_ctx *ctx, event_buf *in, event_buf *out,
+                     jail_packet_ctx *pkt_ctx)
 {
     assert(ctx && pkt_ctx);
-    assert(pkt_ctx->pstate == JP_DATA || pkt_ctx->ctype != JC_CLIENT);
-    assert(pkt_ctx->pstate == JP_START || pkt_ctx->ctype != JC_SERVER);
+    assert(in->fd >= 0 && out->fd < 0);
+    assert(pkt_ctx->connection.client_fd >= 0 &&
+           pkt_ctx->connection.jail_fd < 0);
+    assert(pkt_ctx->pstate == JP_DATA ||
+           pkt_ctx->pstate == JP_START ||
+           pkt_ctx->pstate == JP_HANDSHAKE_END);
+
+    if (pkt_ctx->pstate == JP_HANDSHAKE_END) {
+        pkt_ctx->pstate = JP_START;
+        if (pkt_write(&pkt_ctx->writeback_buf, PKT_START, NULL, 0) ||
+            event_buf_drain(&pkt_ctx->writeback_buf) < 0)
+        {
+            return 1;
+        }
+    }
+
+    if (pkt_ctx->ev_readloop)
+        return event_loop(ctx, jail_packet_io, pkt_ctx) || ctx->has_error;
+    else
+        return jail_packet_pkt(ctx, in, out, pkt_ctx) || ctx->has_error;
+}
+
+int jail_server_loop(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
+{
+    assert(ctx && pkt_ctx);
+    assert(pkt_ctx->pstate == JP_START && pkt_ctx->ctype == JC_SERVER);
+    assert(pkt_ctx->connection.client_fd >= 0 &&
+           pkt_ctx->connection.jail_fd >= 0);
+    pkt_ctx->ev_active = 1;
 
     return event_loop(ctx, jail_packet_io, pkt_ctx) || ctx->has_error;
 }
@@ -414,6 +442,7 @@ event_ctx *jail_client_handshake(int server_fd, jail_packet_ctx *pkt_ctx)
     assert(pkt_ctx->ctype == JC_CLIENT);
 
     pkt_ctx->pstate = JP_HANDSHAKE;
+    pkt_ctx->ev_active = 1;
 
     event_init(&ev_ctx);
     if (event_setup(ev_ctx)) {
@@ -487,10 +516,12 @@ int jail_server_handshake(event_ctx *ctx, jail_packet_ctx *pkt_ctx)
 
     struct event_buf write_buf = WRITE_BUF(pkt_ctx->connection.client_fd);
     pkt_ctx->pstate = JP_HANDSHAKE;
+    pkt_ctx->ev_active = 1;
     pkt_ctx->writeback_buf = write_buf;
 
     rc = event_loop(ctx, jail_packet_io, pkt_ctx);
     if (!rc && pkt_ctx->is_valid)
         pkt_ctx->pstate = JP_START;
+
     return rc;
 }

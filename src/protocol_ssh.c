@@ -85,6 +85,15 @@ typedef struct ssh_client {
     forward_ctx dst;
 } ssh_client;
 
+typedef struct ssh_userdata {
+    jail_packet_ctx *pkt_ctx;
+    ssh_client *client;
+    event_ctx *ev_ctx;
+    event_buf proto_read;
+    event_buf proto_fd;
+    event_buf proto_chan;
+} ssh_userdata;
+
 struct protocol_cbs potd_ssh_callbacks = {
     .on_listen = ssh_on_listen,
     .on_shutdown = ssh_on_shutdown
@@ -745,6 +754,8 @@ static int client_mainloop(ssh_client *data, jail_packet_ctx *pkt_ctx)
 {
     ssh_channel chan = data->chan;
     ssh_session session = ssh_channel_get_session(chan);
+    ssh_userdata userdata = { pkt_ctx, data, NULL,
+                              EMPTY_BUF, EMPTY_BUF, EMPTY_BUF };
     ssh_event event;
     short events;
     forward_ctx *ctx = &data->dst;
@@ -763,7 +774,19 @@ static int client_mainloop(ssh_client *data, jail_packet_ctx *pkt_ctx)
         return 1;
     }
 
-    ssh_channel_cb.userdata = &ctx->sock.fd;
+    pkt_ctx->connection.client_fd = pkt_ctx->writeback_buf.fd =
+        userdata.proto_read.fd = ctx->sock.fd;
+    if (jail_client_data(ev_ctx, &userdata.proto_read,
+                         &userdata.proto_chan, pkt_ctx))
+    {
+        ssh_channel_close(chan);
+        event_free(&ev_ctx);
+        return 1;
+    }
+    pkt_ctx->ev_readloop = 0;
+
+    userdata.ev_ctx = ev_ctx;
+    ssh_channel_cb.userdata = &userdata;
     ssh_callbacks_init(&ssh_channel_cb);
     ssh_set_channel_callbacks(chan, &ssh_channel_cb);
 
@@ -776,7 +799,7 @@ static int client_mainloop(ssh_client *data, jail_packet_ctx *pkt_ctx)
         return 1;
     }
     if (ssh_event_add_fd(event, ctx->sock.fd, events, copy_fd_to_chan,
-        chan) != SSH_OK)
+        &userdata) != SSH_OK)
     {
         E2("Couldn't add fd %d to the event queue", ctx->sock.fd);
         event_free(&ev_ctx);
@@ -803,21 +826,27 @@ static int client_mainloop(ssh_client *data, jail_packet_ctx *pkt_ctx)
 
 static int copy_fd_to_chan(socket_t fd, int revents, void *userdata)
 {
-    ssh_channel chan = (ssh_channel) userdata;
-    char buf[BUFSIZ];
-    int sz = 0;
+    ssh_userdata *sudata = (ssh_userdata *) userdata;
+    ssh_channel chan = sudata->client->chan;
+    ssize_t sz = 0;
+    int written;
 
     if (!chan) {
         close(fd);
         return -1;
     }
-    if(revents & POLLIN) {
-        sz = read(fd, buf, BUFSIZ);
-        if(sz > 0) {
-            ssh_channel_write(chan, buf, sz);
+    if (revents & POLLIN) {
+        sz = event_buf_read(&sudata->proto_read);
+        if (sz > 0 &&
+            !jail_client_data(sudata->ev_ctx, &sudata->proto_read,
+                             &sudata->proto_chan, sudata->pkt_ctx))
+        {
+            written = ssh_channel_write(chan, sudata->proto_chan.buf,
+                                        sudata->proto_chan.buf_used);
+            event_buf_discard(&sudata->proto_chan, written);
         }
     }
-    if(revents & POLLHUP || sz <= 0) {
+    if (revents & POLLHUP || sz <= 0) {
         ssh_channel_close(chan);
         sz = -1;
     }
@@ -832,23 +861,22 @@ static int copy_chan_to_fd(ssh_session session,
                            int is_stderr,
                            void *userdata)
 {
-    int fd = *(int *) userdata;
-    int sz;
+    ssh_userdata *sudata = (ssh_userdata *) userdata;
 
     (void) session;
     (void) is_stderr;
 
-    sz = write(fd, data, len);
-    if (sz <= 0)
+    if (jail_client_send(sudata->pkt_ctx, data, len))
         ssh_channel_close(channel);
 
-    return sz;
+    return len;
 }
 
 static void chan_close(ssh_session session, ssh_channel channel,
                        void *userdata)
 {
-    int fd = *(int *) userdata;
+    ssh_userdata *sudata = (ssh_userdata *) userdata;
+    int fd = sudata->proto_read.fd;
 
     (void) session;
     (void) channel;

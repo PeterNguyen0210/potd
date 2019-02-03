@@ -40,7 +40,7 @@
 #include "jail.h"
 
 #define INIT_PKTCTX(callback, user_data) \
-    { 0, EMPTY_JAILCON, EMPTY_BUF, JC_CLIENT, JP_NONE, NULL, NULL }
+    { 0, 0, 1, EMPTY_JAILCON, EMPTY_BUF, JC_CLIENT, JP_NONE, NULL, NULL }
 
 /* Remember: PKT_MAXSIZ should always be less or equal then BUFSIZ/2 - sizeof(pkt) */
 #define PKT_MAXSIZ 1500 /* pkt->size should not exceed this value */
@@ -77,7 +77,14 @@
  */
 #define PKT_DATA    0x6
 
+/* Client: -
+ * Server: -
+ */
 #define PKT_RESPOK  0x7
+
+/* Client: -
+ * Server: -
+ */
 #define PKT_RESPERR 0x8
 
 typedef enum jail_packet_state {
@@ -94,19 +101,27 @@ typedef enum jail_ctx_type {
 #define PASS_LEN 255
 
 typedef struct jail_packet_ctx {
-    int is_valid;
-    jail_con connection;
-    event_buf writeback_buf;
+    int is_valid;            /* only used during/after jail handshake */
+    int ev_active;           /* only used in jail_packet_pkt and pkt callbacks */
+    int ev_readloop;         /* only used in jail_client_data */
+    jail_con connection;     /* jail/sandbox fd's */
+    event_buf writeback_buf; /* protocol write back buffer */
 
-    jail_ctx_type ctype;
-    jail_packet_state pstate;
+    jail_ctx_type ctype;     /* Client or Server? */
+    jail_packet_state pstate; /* packet state */
 
-    char *user;
-    char *pass;
+    char *user;              /* username used by sandbox */
+    char *pass;              /* password used by sandbox */
 } jail_packet_ctx;
 
 
-int jail_data_loop(event_ctx *ctx, jail_packet_ctx *pkt_ctx);
+int jail_client_send(jail_packet_ctx *pkt_ctx, unsigned char *buf,
+                     size_t siz);
+
+int jail_client_data(event_ctx *ctx, event_buf *in, event_buf *out,
+                     jail_packet_ctx *pkt_ctx);
+
+int jail_server_loop(event_ctx *ctx, jail_packet_ctx *pkt_ctx);
 
 event_ctx *jail_client_handshake(int server_fd, jail_packet_ctx *pkt_ctx);
 
